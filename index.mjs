@@ -50,10 +50,9 @@ export default class MimiAgent {
   /**
    * Detect the internal port epistery-host is listening on
    */
-  getInternalPort(req) {
+  getInternalPort() {
     if (this.internalPort) return this.internalPort;
-    // Use the port from the request's socket
-    this.internalPort = req.socket?.localPort || 4080;
+    this.internalPort = parseInt(process.env.PORT || 4080);
     return this.internalPort;
   }
 
