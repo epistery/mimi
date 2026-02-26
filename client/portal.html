@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mimi - Voice Portal</title>
+    <link rel="stylesheet" href="/style/static.css">
+    <link rel="icon" type="image/png" href="/image/favicon.png">
+    <script src="/script/common.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background: var(--bg-color);
+            color: var(--text-color);
+            font-family: sans-serif;
+        }
+
+        .portal-header {
+            background: var(--bg-color-d);
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+        .portal-header img {
+            height: 28px;
+            width: 28px;
+        }
+        .portal-header h1 {
+            margin: 0;
+            font-size: 18px;
+            color: var(--primary);
+        }
+        .portal-header .status {
+            margin-left: auto;
+            font-size: 12px;
+            color: var(--text-color-quiet);
+        }
+
+        .transcript {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .msg {
+            max-width: 80%;
+            padding: 10px 14px;
+            border-radius: 12px;
+            line-height: 1.4;
+            font-size: 15px;
+            white-space: pre-wrap;
+        }
+        .msg.user {
+            align-self: flex-end;
+            background: var(--primary);
+            color: #fff;
+            border-bottom-right-radius: 4px;
+        }
+        .msg.assistant {
+            align-self: flex-start;
+            background: var(--bg-color-d);
+            color: var(--text-color);
+            border-bottom-left-radius: 4px;
+        }
+        .msg.error {
+            align-self: center;
+            background: #fee;
+            color: #c00;
+            font-size: 13px;
+        }
+        .msg.system {
+            align-self: center;
+            color: var(--text-color-quiet);
+            font-size: 13px;
+            font-style: italic;
+        }
+
+        .controls {
+            padding: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            background: var(--bg-color-d);
+            flex-shrink: 0;
+        }
+
+        .talk-btn {
+            width: 72px;
+            height: 72px;
+            border-radius: 50%;
+            border: 3px solid var(--primary);
+            background: var(--bg-color);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        .talk-btn:hover {
+            background: var(--bg-color-quiet-d);
+        }
+        .talk-btn.listening {
+            background: var(--primary);
+            border-color: var(--accent);
+            animation: pulse 1.5s infinite;
+        }
+        .talk-btn.listening svg {
+            stroke: #fff;
+        }
+        .talk-btn.disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        .talk-btn svg {
+            width: 32px;
+            height: 32px;
+            stroke: var(--primary);
+            fill: none;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(45, 80, 22, 0.4); }
+            50% { box-shadow: 0 0 0 12px rgba(45, 80, 22, 0); }
+        }
+
+        .text-input {
+            display: flex;
+            gap: 8px;
+            flex: 1;
+            max-width: 400px;
+        }
+        .text-input input {
+            flex: 1;
+            padding: 10px 14px;
+            border: 1px solid var(--page-border);
+            border-radius: 20px;
+            font-size: 15px;
+            outline: none;
+            background: var(--bg-color);
+            color: var(--text-color);
+        }
+        .text-input input:focus {
+            border-color: var(--primary);
+        }
+        .text-input button {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 20px;
+            background: var(--primary);
+            color: #fff;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .listening-indicator {
+            font-size: 13px;
+            color: var(--accent);
+            min-height: 18px;
+            text-align: center;
+        }
+
+        .mute-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: 2px solid var(--page-border);
+            background: var(--bg-color);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        .mute-btn:hover {
+            border-color: var(--primary);
+        }
+        .mute-btn.muted {
+            border-color: var(--action-color);
+            background: var(--action-color);
+        }
+        .mute-btn.muted svg {
+            stroke: #fff;
+        }
+        .mute-btn svg {
+            width: 20px;
+            height: 20px;
+            stroke: var(--text-color);
+            fill: none;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+    </style>
+</head>
+<body>
+    <div class="portal-header">
+        <img src="./icon.svg" alt="Mimi">
+        <h1>Mimi</h1>
+        <span class="status" id="statusText">Ready</span>
+    </div>
+
+    <div class="transcript" id="transcript"></div>
+
+    <div class="listening-indicator" id="listenIndicator"></div>
+
+    <div class="controls">
+        <div class="text-input">
+            <input type="text" id="textInput" placeholder="Type or tap mic to speak..." autocomplete="off">
+            <button id="sendBtn">Send</button>
+        </div>
+        <button class="mute-btn" id="muteBtn" title="Mute speech">
+            <svg viewBox="0 0 24 24">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14" id="muteWave1"/>
+                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" id="muteWave2"/>
+            </svg>
+        </button>
+        <button class="talk-btn" id="talkBtn" title="Hold to talk">
+            <svg viewBox="0 0 24 24">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="23"/>
+                <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+        </button>
+    </div>
+
+    <script>
+    (function() {
+        const transcript = document.getElementById('transcript');
+        const talkBtn = document.getElementById('talkBtn');
+        const textInput = document.getElementById('textInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const statusText = document.getElementById('statusText');
+        const listenIndicator = document.getElementById('listenIndicator');
+
+        const muteBtn = document.getElementById('muteBtn');
+
+        let sessionId = null;
+        let isListening = false;
+        let isBusy = false;
+        let isMuted = false;
+        let recognition = null;
+        let synthesis = window.speechSynthesis;
+
+        // Speech recognition setup
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+
+            recognition.onstart = function() {
+                isListening = true;
+                talkBtn.classList.add('listening');
+                listenIndicator.textContent = 'Listening...';
+                statusText.textContent = 'Listening';
+            };
+
+            recognition.onresult = function(event) {
+                let interim = '';
+                let final = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    if (event.results[i].isFinal) {
+                        final += event.results[i][0].transcript;
+                    } else {
+                        interim += event.results[i][0].transcript;
+                    }
+                }
+                listenIndicator.textContent = interim || final || 'Listening...';
+                if (final) {
+                    sendMessage(final.trim());
+                }
+            };
+
+            recognition.onerror = function(event) {
+                console.error('[Mimi] Recognition error:', event.error);
+                if (event.error !== 'no-speech' && event.error !== 'aborted') {
+                    addMessage('system', `Mic error: ${event.error}`);
+                }
+                stopListening();
+            };
+
+            recognition.onend = function() {
+                stopListening();
+            };
+        }
+
+        function stopListening() {
+            isListening = false;
+            talkBtn.classList.remove('listening');
+            listenIndicator.textContent = '';
+            if (!isBusy) statusText.textContent = 'Ready';
+        }
+
+        // Talk button - toggle
+        talkBtn.addEventListener('click', function() {
+            if (isBusy) return;
+            if (!recognition) {
+                addMessage('error', 'Speech recognition not supported in this browser.');
+                return;
+            }
+            // Stop any ongoing speech
+            synthesis.cancel();
+
+            if (isListening) {
+                recognition.stop();
+            } else {
+                try {
+                    recognition.start();
+                } catch (e) {
+                    // Already started
+                    recognition.stop();
+                }
+            }
+        });
+
+        // Mute toggle
+        muteBtn.addEventListener('click', function() {
+            isMuted = !isMuted;
+            muteBtn.classList.toggle('muted', isMuted);
+            muteBtn.title = isMuted ? 'Unmute speech' : 'Mute speech';
+            // Hide the sound waves when muted
+            document.getElementById('muteWave1').style.display = isMuted ? 'none' : '';
+            document.getElementById('muteWave2').style.display = isMuted ? 'none' : '';
+            if (isMuted) synthesis.cancel();
+        });
+
+        // Text input
+        textInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                const text = textInput.value.trim();
+                if (text && !isBusy) {
+                    sendMessage(text);
+                    textInput.value = '';
+                }
+            }
+        });
+        sendBtn.addEventListener('click', function() {
+            const text = textInput.value.trim();
+            if (text && !isBusy) {
+                sendMessage(text);
+                textInput.value = '';
+            }
+        });
+
+        function addMessage(role, text) {
+            const div = document.createElement('div');
+            div.className = `msg ${role}`;
+            div.textContent = text;
+            transcript.appendChild(div);
+            transcript.scrollTop = transcript.scrollHeight;
+            return div;
+        }
+
+        async function sendMessage(text) {
+            if (isBusy) return;
+            isBusy = true;
+            talkBtn.classList.add('disabled');
+            statusText.textContent = 'Thinking...';
+
+            addMessage('user', text);
+
+            try {
+                // Initial request
+                const resp = await fetch('./message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text, sessionId })
+                });
+                let data = await resp.json();
+
+                if (!sessionId && data.sessionId) {
+                    sessionId = data.sessionId;
+                }
+
+                // Poll with continuation token
+                if (data.status === 'working' && data.continuationToken) {
+                    data = await pollForResult(data.continuationToken);
+                }
+
+                if (data.status === 'error') {
+                    addMessage('error', data.message || 'Something went wrong');
+                } else if (data.response) {
+                    const content = data.response.content || data.response;
+                    addMessage('assistant', content);
+                    speak(content);
+                }
+            } catch (err) {
+                console.error('[Mimi] Send error:', err);
+                addMessage('error', 'Failed to send message');
+            } finally {
+                isBusy = false;
+                talkBtn.classList.remove('disabled');
+                statusText.textContent = 'Ready';
+            }
+        }
+
+        async function pollForResult(token) {
+            const pollInterval = 1500;
+            const maxPolls = 60; // 90 seconds max
+
+            for (let i = 0; i < maxPolls; i++) {
+                await new Promise(r => setTimeout(r, pollInterval));
+
+                const resp = await fetch('./message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ continuationToken: token })
+                });
+                const data = await resp.json();
+
+                if (data.progress) {
+                    statusText.textContent = data.progress;
+                }
+
+                if (data.status !== 'working') {
+                    return data;
+                }
+            }
+            return { status: 'error', message: 'Request timed out' };
+        }
+
+        function speak(text) {
+            if (!synthesis || isMuted) return;
+            synthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            synthesis.speak(utterance);
+        }
+
+        // Initial greeting
+        addMessage('system', 'Tap the microphone or type to start talking.');
+    })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mimi Admin</title>
+  <link rel="stylesheet" href="/style/static.css">
+  <script src="/script/common.js"></script>
+  <style>
+    .stats {
+      display: flex;
+      gap: 2em;
+      margin-bottom: var(--spacer2);
+    }
+    .stat {
+      text-align: center;
+      flex: 1;
+      padding: var(--spacer);
+      background: var(--bg-color-quiet);
+      border-radius: 8px;
+    }
+    .stat-value {
+      font-size: 2em;
+      font-weight: 600;
+      color: var(--text-color);
+    }
+    .stat-label {
+      font-size: 0.875em;
+      color: var(--text-color-quiet);
+    }
+    .btn {
+      padding: 0.5em 1em;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.875em;
+      min-width: 60px;
+    }
+    .btn-primary {
+      background: var(--action-color);
+      color: white;
+    }
+    .btn-primary:hover {
+      background: var(--action-color-hilite);
+    }
+    .error {
+      padding: 1em;
+      background: #ffe6e6;
+      color: #cc0000;
+      border-radius: 4px;
+      margin-bottom: var(--spacer);
+    }
+    .success {
+      padding: 1em;
+      background: #e6f7e6;
+      color: #339933;
+      border-radius: 4px;
+      margin-bottom: var(--spacer);
+    }
+    iframe {
+      width: 100%;
+      border: 0;
+      height: 300px;
+    }
+    .config-row {
+      display: flex;
+      align-items: center;
+      gap: 1em;
+      margin-bottom: var(--spacer);
+    }
+    .config-row label {
+      font-weight: 500;
+      min-width: 120px;
+    }
+    .config-row input {
+      flex: 1;
+      padding: 0.5em;
+      border: 1px solid var(--page-border);
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 0.875em;
+    }
+    .config-row input:focus {
+      outline: none;
+      border-color: var(--action-color);
+    }
+  </style>
+</head>
+<body>
+  <header data-widget="header"></header>
+  <main class="console-layout no-sidebar">
+    <div class="console-main">
+      <div class="console-header">
+        <h1>Mimi Admin</h1>
+      </div>
+
+      <div id="error" class="error" style="display: none;"></div>
+      <div id="success" class="success" style="display: none;"></div>
+
+      <div class="stats" id="stats">
+        <div class="stat">
+          <div class="stat-value" id="session-count">-</div>
+          <div class="stat-label">Active Sessions</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="pending-count">-</div>
+          <div class="stat-label">Pending Requests</div>
+        </div>
+      </div>
+
+      <div class="console-panel">
+        <iframe src="/page/acl?agent=@epistery/mimi"></iframe>
+      </div>
+
+      <div class="console-panel">
+        <h2>Claude API Key</h2>
+        <div class="config-row">
+          <label>API Key</label>
+          <input type="password" id="claude-key" placeholder="sk-ant-..." autocomplete="off">
+          <button class="btn btn-primary" onclick="saveKey()">Save</button>
+        </div>
+        <div style="font-size:0.8em; color:var(--text-color-quiet); margin-top:0.5em;">
+          Stored in domain config. Required for Mimi to relay messages through Claude.
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const API_BASE = './';
+
+    async function loadStatus() {
+      try {
+        const response = await fetch(API_BASE + 'status');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const status = await response.json();
+
+        document.getElementById('session-count').textContent = status.activeSessions || 0;
+        document.getElementById('pending-count').textContent = status.pendingRequests || 0;
+      } catch (error) {
+        console.error('[mimi-admin] Status error:', error);
+      }
+    }
+
+    async function loadKey() {
+      try {
+        const response = await fetch(API_BASE + 'admin/key');
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data.hasKey) {
+          document.getElementById('claude-key').placeholder = 'Key is set (enter new value to change)';
+        }
+      } catch (error) {
+        console.error('[mimi-admin] Key check error:', error);
+      }
+    }
+
+    async function saveKey() {
+      const key = document.getElementById('claude-key').value.trim();
+      if (!key) return;
+
+      try {
+        const response = await fetch(API_BASE + 'admin/key', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key })
+        });
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          throw new Error(err.error || `HTTP ${response.status}`);
+        }
+
+        document.getElementById('claude-key').value = '';
+        document.getElementById('claude-key').placeholder = 'Key is set (enter new value to change)';
+
+        const successEl = document.getElementById('success');
+        successEl.textContent = 'API key saved.';
+        successEl.style.display = 'block';
+        setTimeout(() => { successEl.style.display = 'none'; }, 3000);
+      } catch (error) {
+        const errorEl = document.getElementById('error');
+        errorEl.textContent = 'Failed to save key: ' + error.message;
+        errorEl.style.display = 'block';
+        setTimeout(() => { errorEl.style.display = 'none'; }, 5000);
+      }
+    }
+
+    loadStatus();
+    loadKey();
+  </script>
+</body>
+</html>

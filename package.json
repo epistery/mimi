@@ -1,0 +1,18 @@
+{
+  "name": "@epistery/mimi",
+  "version": "0.1.0",
+  "description": "Voice portal - talk to your epistery host",
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.68.0",
+    "epistery": "^1.3.0",
+    "express": "^4.18.2"
+  },
+  "keywords": ["epistery", "voice", "mcp", "claude"],
+  "author": "Epistery",
+  "license": "MIT"
+}
