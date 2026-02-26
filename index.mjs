@@ -81,7 +81,8 @@ export default class MimiAgent {
     const headers = {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
-      'Host': reqCtx.host
+      'Host': reqCtx.host,
+      'X-Forwarded-Host': reqCtx.host
     };
     if (reqCtx.authorization) headers['Authorization'] = reqCtx.authorization;
     if (reqCtx.cookie) headers['Cookie'] = reqCtx.cookie;
