@@ -89,10 +89,15 @@ export default class MimiAgent {
 
     const baseUrl = `http://127.0.0.1:${port}`;
 
-    const api = async (path, opts = {}) => {
-      const url = `${baseUrl}${path}`;
-      const res = await fetch(url, { ...opts, headers: { ...headers, ...opts.headers } });
-      return res.json();
+    const api = async (urlPath, opts = {}) => {
+      const url = `${baseUrl}${urlPath}`;
+      try {
+        const res = await fetch(url, { ...opts, headers: { ...headers, ...opts.headers } });
+        return res.json();
+      } catch (e) {
+        console.error(`[mimi] Proxy error: ${opts.method || 'GET'} ${url} → ${e.message}`);
+        throw e;
+      }
     };
 
     try {
@@ -385,7 +390,8 @@ export default class MimiAgent {
       const domain = req.hostname || 'localhost';
       const cfg = new Config();
       cfg.setPath(domain);
-      cfg.data.anthropic_api_key = key;
+      if (!cfg.data.claude) cfg.data.claude = {};
+      cfg.data.claude.anthropicKey = key;
       cfg.save();
       // Reset cached client so next request picks up new key
       this.anthropic = null;
