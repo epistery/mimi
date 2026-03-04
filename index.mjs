@@ -667,48 +667,63 @@ export default class MimiAgent {
       const domain = reqCtx.hostname || 'localhost';
       const userAddress = reqCtx.episteryClient?.address || 'unknown';
 
-      const systemPrompt = `You are Mimi, a voice assistant for the epistery host at ${domain}.
-You help users interact with their epistery data through natural conversation.
-You have access to tools for reading and writing wiki pages, managing archives,
-posting messages, and checking identity.
+      const systemPrompt = `You are Mimi, a general-purpose voice assistant on the epistery host at ${domain}.
+You can answer any question — weather, trivia, math, advice, anything.
+Use web_search for current information like weather, news, sports, or prices.
+You also have epistery tools for wiki pages, archives, messages, and identity.
 
-The user is speaking to you through a microphone - keep responses concise and conversational.
-Avoid long lists or heavy formatting since responses will be spoken aloud.
+All responses are spoken aloud via TTS. Keep answers short — a few sentences, not paragraphs.
+No bullet points, no markdown, no numbered lists, no headers.
+Always finish your sentence. Give the actual answer, then stop.
 User wallet address: ${userAddress}`;
+
+      // Add built-in web search alongside epistery tools
+      const allTools = [
+        { type: 'web_search_20250305', name: 'web_search', max_uses: 3 },
+        ...tools
+      ];
 
       pendingState.progress = 'Sending to Claude...';
       let claudeMessage = await this.callClaudeWithRetry(client, {
         model: 'claude-sonnet-4-20250514',
         max_tokens: 4096,
         system: systemPrompt,
-        tools,
+        tools: allTools,
         messages: history
       });
 
-      // Tool-calling loop (same as pro-research lines 406-445)
+      // Tool-calling loop
       let toolCallCount = 0;
       while (claudeMessage.stop_reason === 'tool_use') {
         toolCallCount++;
         const toolUse = claudeMessage.content.find(block => block.type === 'tool_use');
 
-        pendingState.progress = `Using ${toolUse.name} (${toolCallCount})...`;
-        console.log(`[mimi] Tool: ${toolUse.name}`, toolUse.input);
+        // web_search is handled server-side by Anthropic — no proxy needed
+        if (toolUse && toolUse.name !== 'web_search') {
+          pendingState.progress = `Using ${toolUse.name} (${toolCallCount})...`;
+          console.log(`[mimi] Tool: ${toolUse.name}`, toolUse.input);
 
-        const toolResult = await this.proxyToolCall(toolUse.name, toolUse.input, reqCtx);
-        console.log(`[mimi] Tool result:`, JSON.stringify(toolResult).substring(0, 200));
+          const toolResult = await this.proxyToolCall(toolUse.name, toolUse.input, reqCtx);
+          console.log(`[mimi] Tool result:`, JSON.stringify(toolResult).substring(0, 200));
 
-        // Add assistant's tool use to history
-        history.push({ role: 'assistant', content: claudeMessage.content });
+          // Add assistant's tool use to history
+          history.push({ role: 'assistant', content: claudeMessage.content });
 
-        // Add tool result
-        history.push({
-          role: 'user',
-          content: [{
-            type: 'tool_result',
-            tool_use_id: toolUse.id,
-            content: JSON.stringify(toolResult)
-          }]
-        });
+          // Add tool result
+          history.push({
+            role: 'user',
+            content: [{
+              type: 'tool_result',
+              tool_use_id: toolUse.id,
+              content: JSON.stringify(toolResult)
+            }]
+          });
+        } else {
+          // Server tool (web_search) — results are already in the response content
+          pendingState.progress = `Searching the web (${toolCallCount})...`;
+          console.log(`[mimi] Server tool: web_search`);
+          history.push({ role: 'assistant', content: claudeMessage.content });
+        }
 
         // Continue conversation
         pendingState.progress = `Processing results (${toolCallCount})...`;
@@ -716,7 +731,7 @@ User wallet address: ${userAddress}`;
           model: 'claude-sonnet-4-20250514',
           max_tokens: 4096,
           system: systemPrompt,
-          tools,
+          tools: allTools,
           messages: history
         });
       }

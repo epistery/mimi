@@ -276,6 +276,7 @@
         let isMuted = false;
         let vadInstance = null;
         let currentAudio = null; // <audio> element for TTS playback
+        let synthesis = window.speechSynthesis;
 
         // State machine: idle (dormant, background wake-word check) -> thinking -> speaking -> idle
         let state = 'idle';
@@ -407,7 +408,9 @@
                         addMessage('assistant', content);
 
                         if (result.response.audioUrl) {
-                            await playAudio(result.response.audioUrl);
+                            await playAudio(result.response.audioUrl, content);
+                        } else {
+                            await speak(content);
                         }
                     }
                 }
@@ -420,8 +423,24 @@
             setState('idle');
         }
 
-        // ---- Play TTS audio ----
-        function playAudio(url) {
+        // ---- TTS via speechSynthesis ----
+        function speak(text) {
+            if (!synthesis || isMuted) return Promise.resolve();
+            return new Promise((resolve) => {
+                synthesis.cancel();
+                setState('speaking');
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.rate = 1.0;
+                utterance.pitch = 1.0;
+                utterance.onend = () => resolve();
+                utterance.onerror = () => resolve();
+                synthesis.speak(utterance);
+            });
+        }
+
+        // ---- Play server TTS WAV, fall back to speechSynthesis ----
+        function playAudio(url, fallbackText) {
+            if (isMuted) return Promise.resolve();
             return new Promise((resolve) => {
                 setState('speaking');
                 if (currentAudio) {
@@ -435,11 +454,16 @@
                     resolve();
                 };
                 audio.onerror = () => {
-                    console.error('[Mimi] Audio playback error');
+                    console.error('[Mimi] WAV playback failed, falling back to speechSynthesis');
                     currentAudio = null;
-                    resolve();
+                    // Fall back to browser TTS
+                    speak(fallbackText || '').then(resolve);
                 };
-                audio.play().catch(() => resolve());
+                audio.play().catch(() => {
+                    // Autoplay blocked — fall back to speechSynthesis
+                    currentAudio = null;
+                    speak(fallbackText || '').then(resolve);
+                });
             });
         }
 
@@ -494,6 +518,7 @@
                 } else if (data.response) {
                     const content = data.response.content || data.response;
                     addMessage('assistant', content);
+                    await speak(content);
                 }
             } catch (err) {
                 console.error('[Mimi] Send error:', err);
@@ -541,6 +566,7 @@
                     vadInstance.pause();
                     setState('muted');
                     // Stop any playing audio
+                    if (synthesis) synthesis.cancel();
                     if (currentAudio) {
                         currentAudio.pause();
                         currentAudio = null;
