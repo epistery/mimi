@@ -7,6 +7,8 @@
     <link rel="stylesheet" href="/style/static.css">
     <link rel="icon" type="image/png" href="/image/favicon.png">
     <script src="/script/common.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.0/dist/ort.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/bundle.min.js"></script>
     <style>
         body {
             margin: 0;
@@ -89,51 +91,91 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 12px;
+            gap: 16px;
             background: var(--bg-color-d);
             flex-shrink: 0;
         }
 
-        .talk-btn {
-            width: 72px;
-            height: 72px;
+        /* Status orb — replaces talk button */
+        .status-orb {
+            width: 120px;
+            height: 120px;
             border-radius: 50%;
-            border: 3px solid var(--primary);
+            border: 3px solid var(--page-border);
             background: var(--bg-color);
-            cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
-            transition: all 0.2s;
+            flex-direction: column;
+            transition: all 0.3s;
+            cursor: default;
+            position: relative;
         }
-        .talk-btn:hover {
-            background: var(--bg-color-quiet-d);
+        .status-orb .orb-label {
+            font-size: 13px;
+            color: var(--text-color-quiet);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 4px;
         }
-        .talk-btn.listening {
-            background: var(--primary);
-            border-color: var(--accent);
-            animation: pulse 1.5s infinite;
-        }
-        .talk-btn.listening svg {
-            stroke: #fff;
-        }
-        .talk-btn.disabled {
-            opacity: 0.4;
-            cursor: not-allowed;
-        }
-        .talk-btn svg {
-            width: 32px;
-            height: 32px;
-            stroke: var(--primary);
+        .status-orb svg {
+            width: 36px;
+            height: 36px;
+            stroke: var(--text-color-quiet);
             fill: none;
             stroke-width: 2;
             stroke-linecap: round;
             stroke-linejoin: round;
         }
 
+        /* Orb states */
+        .status-orb.idle {
+            border-color: var(--page-border);
+        }
+        .status-orb.idle svg { stroke: var(--text-color-quiet); }
+
+        .status-orb.hearing {
+            border-color: var(--primary);
+            background: rgba(45, 80, 22, 0.1);
+            animation: pulse 1.2s infinite;
+        }
+        .status-orb.hearing svg { stroke: var(--primary); }
+
+        .status-orb.transcribing {
+            border-color: var(--accent, #e8a030);
+            animation: pulse-amber 1.5s infinite;
+        }
+        .status-orb.transcribing svg { stroke: var(--accent, #e8a030); }
+
+        .status-orb.thinking {
+            border-color: var(--rust-mid, #a04020);
+            animation: pulse-rust 2s infinite;
+        }
+        .status-orb.thinking svg { stroke: var(--rust-mid, #a04020); }
+
+        .status-orb.speaking {
+            border-color: var(--primary);
+            background: var(--primary);
+        }
+        .status-orb.speaking svg { stroke: #fff; }
+        .status-orb.speaking .orb-label { color: #fff; }
+
+        .status-orb.muted {
+            border-color: var(--action-color, #c00);
+            opacity: 0.5;
+        }
+
         @keyframes pulse {
             0%, 100% { box-shadow: 0 0 0 0 rgba(45, 80, 22, 0.4); }
-            50% { box-shadow: 0 0 0 12px rgba(45, 80, 22, 0); }
+            50% { box-shadow: 0 0 0 16px rgba(45, 80, 22, 0); }
+        }
+        @keyframes pulse-amber {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(232, 160, 48, 0.3); }
+            50% { box-shadow: 0 0 0 12px rgba(232, 160, 48, 0); }
+        }
+        @keyframes pulse-rust {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(160, 64, 32, 0.3); }
+            50% { box-shadow: 0 0 0 12px rgba(160, 64, 32, 0); }
         }
 
         .text-input {
@@ -163,13 +205,6 @@
             color: #fff;
             cursor: pointer;
             font-size: 14px;
-        }
-
-        .listening-indicator {
-            font-size: 13px;
-            color: var(--accent);
-            min-height: 18px;
-            text-align: center;
         }
 
         .mute-btn {
@@ -203,6 +238,13 @@
             stroke-linecap: round;
             stroke-linejoin: round;
         }
+
+        .listening-indicator {
+            font-size: 13px;
+            color: var(--accent);
+            min-height: 18px;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -210,7 +252,7 @@
     <div class="portal-header">
         <img src="./icon.svg" alt="Mimi">
         <h1>Mimi</h1>
-        <span class="status" id="statusText">Ready</span>
+        <span class="status" id="statusText">Initializing...</span>
     </div>
 
     <div class="transcript" id="transcript"></div>
@@ -219,134 +261,221 @@
 
     <div class="controls">
         <div class="text-input">
-            <input type="text" id="textInput" placeholder="Type or tap mic to speak..." autocomplete="off">
+            <input type="text" id="textInput" placeholder="Type a message..." autocomplete="off">
             <button id="sendBtn">Send</button>
         </div>
-        <button class="mute-btn" id="muteBtn" title="Mute speech">
+        <button class="mute-btn" id="muteBtn" title="Mute microphone">
             <svg viewBox="0 0 24 24">
                 <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
                 <path d="M19.07 4.93a10 10 0 0 1 0 14.14" id="muteWave1"/>
                 <path d="M15.54 8.46a5 5 0 0 1 0 7.07" id="muteWave2"/>
             </svg>
         </button>
-        <button class="talk-btn" id="talkBtn" title="Hold to talk">
+        <div class="status-orb idle" id="statusOrb">
             <svg viewBox="0 0 24 24">
                 <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
                 <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
                 <line x1="12" y1="19" x2="12" y2="23"/>
                 <line x1="8" y1="23" x2="16" y2="23"/>
             </svg>
-        </button>
+            <span class="orb-label" id="orbLabel">idle</span>
+        </div>
     </div>
 
     <script>
     (function() {
         const transcript = document.getElementById('transcript');
-        const talkBtn = document.getElementById('talkBtn');
         const textInput = document.getElementById('textInput');
         const sendBtn = document.getElementById('sendBtn');
         const statusText = document.getElementById('statusText');
         const listenIndicator = document.getElementById('listenIndicator');
-
         const muteBtn = document.getElementById('muteBtn');
+        const statusOrb = document.getElementById('statusOrb');
+        const orbLabel = document.getElementById('orbLabel');
 
         let sessionId = null;
-        let isListening = false;
-        let isBusy = false;
         let isMuted = false;
-        let recognition = null;
-        let synthesis = window.speechSynthesis;
+        let vad = null;
+        let currentAudio = null; // <audio> element for TTS playback
 
-        // Speech recognition setup
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (SpeechRecognition) {
-            recognition = new SpeechRecognition();
-            recognition.continuous = false;
-            recognition.interimResults = true;
-            recognition.lang = 'en-US';
+        // State machine: idle -> hearing -> transcribing -> thinking -> speaking -> idle
+        let state = 'idle';
 
-            recognition.onstart = function() {
-                isListening = true;
-                talkBtn.classList.add('listening');
-                listenIndicator.textContent = 'Listening...';
-                statusText.textContent = 'Listening';
-            };
+        function setState(newState, detail) {
+            state = newState;
+            statusOrb.className = 'status-orb ' + newState;
+            orbLabel.textContent = newState;
+            switch (newState) {
+                case 'idle':
+                    statusText.textContent = 'Listening...';
+                    listenIndicator.textContent = '';
+                    break;
+                case 'hearing':
+                    statusText.textContent = 'Hearing speech...';
+                    listenIndicator.textContent = 'Detecting speech...';
+                    break;
+                case 'transcribing':
+                    statusText.textContent = 'Transcribing...';
+                    listenIndicator.textContent = 'Sending audio...';
+                    break;
+                case 'thinking':
+                    statusText.textContent = detail || 'Thinking...';
+                    listenIndicator.textContent = '';
+                    break;
+                case 'speaking':
+                    statusText.textContent = 'Speaking...';
+                    listenIndicator.textContent = '';
+                    break;
+                case 'muted':
+                    statusText.textContent = 'Muted';
+                    listenIndicator.textContent = '';
+                    break;
+            }
+        }
 
-            recognition.onresult = function(event) {
-                let interim = '';
-                let final = '';
-                for (let i = event.resultIndex; i < event.results.length; i++) {
-                    if (event.results[i].isFinal) {
-                        final += event.results[i][0].transcript;
-                    } else {
-                        interim += event.results[i][0].transcript;
+        // ---- WAV encoder: Float32Array @ 16kHz -> WAV bytes ----
+        function float32ToWav(samples, sampleRate) {
+            const numChannels = 1;
+            const bitsPerSample = 16;
+            const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+            const blockAlign = numChannels * (bitsPerSample / 8);
+            const dataSize = samples.length * (bitsPerSample / 8);
+            const buffer = new ArrayBuffer(44 + dataSize);
+            const view = new DataView(buffer);
+
+            // RIFF header
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + dataSize, true);
+            writeString(view, 8, 'WAVE');
+
+            // fmt chunk
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);            // chunk size
+            view.setUint16(20, 1, true);              // PCM
+            view.setUint16(22, numChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, byteRate, true);
+            view.setUint16(32, blockAlign, true);
+            view.setUint16(34, bitsPerSample, true);
+
+            // data chunk
+            writeString(view, 36, 'data');
+            view.setUint32(40, dataSize, true);
+
+            // Convert float32 to int16
+            let offset = 44;
+            for (let i = 0; i < samples.length; i++) {
+                let s = Math.max(-1, Math.min(1, samples[i]));
+                s = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                view.setInt16(offset, s, true);
+                offset += 2;
+            }
+
+            return buffer;
+        }
+
+        function writeString(view, offset, string) {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        }
+
+        // ---- Send audio to server ----
+        async function sendAudio(float32Samples) {
+            if (state === 'muted') return;
+            setState('transcribing');
+
+            try {
+                // Encode as WAV, then base64
+                const wavBuffer = float32ToWav(float32Samples, 16000);
+                const wavBytes = new Uint8Array(wavBuffer);
+                let binary = '';
+                for (let i = 0; i < wavBytes.length; i++) {
+                    binary += String.fromCharCode(wavBytes[i]);
+                }
+                const base64 = btoa(binary);
+
+                // POST to server
+                const resp = await fetch('./audio', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ audio: base64, sessionId })
+                });
+                const data = await resp.json();
+
+                if (data.sessionId) sessionId = data.sessionId;
+
+                if (data.status === 'ignored') {
+                    // No wake word — return to idle silently
+                    setState('idle');
+                    return;
+                }
+
+                if (data.status === 'error') {
+                    addMessage('error', data.message || 'Audio processing failed');
+                    setState('idle');
+                    return;
+                }
+
+                // Show what was heard
+                if (data.text) {
+                    addMessage('user', data.text);
+                }
+
+                // Poll for result
+                if (data.status === 'working' && data.continuationToken) {
+                    setState('thinking');
+                    const result = await pollForResult(data.continuationToken);
+
+                    if (result.status === 'error') {
+                        addMessage('error', result.message || 'Something went wrong');
+                    } else if (result.response) {
+                        const content = result.response.content || result.response;
+                        addMessage('assistant', content);
+
+                        // Play TTS audio if available
+                        if (result.response.audioUrl) {
+                            await playAudio(result.response.audioUrl);
+                        }
                     }
                 }
-                listenIndicator.textContent = interim || final || 'Listening...';
-                if (final) {
-                    sendMessage(final.trim());
-                }
-            };
+            } catch (err) {
+                console.error('[Mimi] Audio send error:', err);
+                addMessage('error', 'Failed to process audio');
+            }
 
-            recognition.onerror = function(event) {
-                console.error('[Mimi] Recognition error:', event.error);
-                if (event.error !== 'no-speech' && event.error !== 'aborted') {
-                    addMessage('system', `Mic error: ${event.error}`);
-                }
-                stopListening();
-            };
-
-            recognition.onend = function() {
-                stopListening();
-            };
+            setState('idle');
         }
 
-        function stopListening() {
-            isListening = false;
-            talkBtn.classList.remove('listening');
-            listenIndicator.textContent = '';
-            if (!isBusy) statusText.textContent = 'Ready';
+        // ---- Play TTS audio ----
+        function playAudio(url) {
+            return new Promise((resolve) => {
+                setState('speaking');
+                if (currentAudio) {
+                    currentAudio.pause();
+                    currentAudio = null;
+                }
+                const audio = new Audio('./' + url);
+                currentAudio = audio;
+                audio.onended = () => {
+                    currentAudio = null;
+                    resolve();
+                };
+                audio.onerror = () => {
+                    console.error('[Mimi] Audio playback error');
+                    currentAudio = null;
+                    resolve();
+                };
+                audio.play().catch(() => resolve());
+            });
         }
 
-        // Talk button - toggle
-        talkBtn.addEventListener('click', function() {
-            if (isBusy) return;
-            if (!recognition) {
-                addMessage('error', 'Speech recognition not supported in this browser.');
-                return;
-            }
-            // Stop any ongoing speech
-            synthesis.cancel();
-
-            if (isListening) {
-                recognition.stop();
-            } else {
-                try {
-                    recognition.start();
-                } catch (e) {
-                    // Already started
-                    recognition.stop();
-                }
-            }
-        });
-
-        // Mute toggle
-        muteBtn.addEventListener('click', function() {
-            isMuted = !isMuted;
-            muteBtn.classList.toggle('muted', isMuted);
-            muteBtn.title = isMuted ? 'Unmute speech' : 'Mute speech';
-            // Hide the sound waves when muted
-            document.getElementById('muteWave1').style.display = isMuted ? 'none' : '';
-            document.getElementById('muteWave2').style.display = isMuted ? 'none' : '';
-            if (isMuted) synthesis.cancel();
-        });
-
-        // Text input
+        // ---- Text input (unchanged) ----
         textInput.addEventListener('keydown', function(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 const text = textInput.value.trim();
-                if (text && !isBusy) {
+                if (text) {
                     sendMessage(text);
                     textInput.value = '';
                 }
@@ -354,7 +483,7 @@
         });
         sendBtn.addEventListener('click', function() {
             const text = textInput.value.trim();
-            if (text && !isBusy) {
+            if (text) {
                 sendMessage(text);
                 textInput.value = '';
             }
@@ -362,7 +491,7 @@
 
         function addMessage(role, text) {
             const div = document.createElement('div');
-            div.className = `msg ${role}`;
+            div.className = 'msg ' + role;
             div.textContent = text;
             transcript.appendChild(div);
             transcript.scrollTop = transcript.scrollHeight;
@@ -370,15 +499,10 @@
         }
 
         async function sendMessage(text) {
-            if (isBusy) return;
-            isBusy = true;
-            talkBtn.classList.add('disabled');
-            statusText.textContent = 'Thinking...';
-
+            setState('thinking');
             addMessage('user', text);
 
             try {
-                // Initial request
                 const resp = await fetch('./message', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -386,11 +510,8 @@
                 });
                 let data = await resp.json();
 
-                if (!sessionId && data.sessionId) {
-                    sessionId = data.sessionId;
-                }
+                if (!sessionId && data.sessionId) sessionId = data.sessionId;
 
-                // Poll with continuation token
                 if (data.status === 'working' && data.continuationToken) {
                     data = await pollForResult(data.continuationToken);
                 }
@@ -400,21 +521,18 @@
                 } else if (data.response) {
                     const content = data.response.content || data.response;
                     addMessage('assistant', content);
-                    speak(content);
                 }
             } catch (err) {
                 console.error('[Mimi] Send error:', err);
                 addMessage('error', 'Failed to send message');
-            } finally {
-                isBusy = false;
-                talkBtn.classList.remove('disabled');
-                statusText.textContent = 'Ready';
             }
+
+            setState('idle');
         }
 
         async function pollForResult(token) {
             const pollInterval = 1500;
-            const maxPolls = 60; // 90 seconds max
+            const maxPolls = 60;
 
             for (let i = 0; i < maxPolls; i++) {
                 await new Promise(r => setTimeout(r, pollInterval));
@@ -437,17 +555,79 @@
             return { status: 'error', message: 'Request timed out' };
         }
 
-        function speak(text) {
-            if (!synthesis || isMuted) return;
-            synthesis.cancel();
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.rate = 1.0;
-            utterance.pitch = 1.0;
-            synthesis.speak(utterance);
+        // ---- Mute toggle ----
+        muteBtn.addEventListener('click', function() {
+            isMuted = !isMuted;
+            muteBtn.classList.toggle('muted', isMuted);
+            muteBtn.title = isMuted ? 'Unmute microphone' : 'Mute microphone';
+            document.getElementById('muteWave1').style.display = isMuted ? 'none' : '';
+            document.getElementById('muteWave2').style.display = isMuted ? 'none' : '';
+
+            if (vad) {
+                if (isMuted) {
+                    vad.pause();
+                    setState('muted');
+                    // Stop any playing audio
+                    if (currentAudio) {
+                        currentAudio.pause();
+                        currentAudio = null;
+                    }
+                } else {
+                    vad.start();
+                    setState('idle');
+                }
+            }
+        });
+
+        // ---- VAD initialization ----
+        async function initVAD() {
+            if (typeof vad_web === 'undefined') {
+                addMessage('error', 'VAD library failed to load. Check network connection.');
+                statusText.textContent = 'VAD unavailable';
+                return;
+            }
+
+            try {
+                vad = await vad_web.MicVAD.new({
+                    positiveSpeechThreshold: 0.8,
+                    negativeSpeechThreshold: 0.15,
+                    minSpeechFrames: 8,         // ~0.5s at 16kHz / 512 frame size
+                    preSpeechPadFrames: 5,
+                    redemptionFrames: 16,        // ~500ms silence before cutoff
+
+                    onSpeechStart: () => {
+                        if (!isMuted && state === 'idle') {
+                            setState('hearing');
+                        }
+                    },
+
+                    onSpeechEnd: (audio) => {
+                        if (isMuted) return;
+                        // audio is Float32Array at 16kHz
+                        if (audio.length < 8000) {
+                            // Less than 0.5s — too short, ignore
+                            setState('idle');
+                            return;
+                        }
+                        sendAudio(audio);
+                    },
+
+                    onVADMisfire: () => {
+                        if (state === 'hearing') setState('idle');
+                    }
+                });
+
+                vad.start();
+                setState('idle');
+                addMessage('system', 'Listening for "Mimi" wake word. Say "Mimi" followed by your request.');
+            } catch (err) {
+                console.error('[Mimi] VAD init error:', err);
+                addMessage('error', 'Microphone access failed: ' + err.message);
+                statusText.textContent = 'Mic unavailable';
+            }
         }
 
-        // Initial greeting
-        addMessage('system', 'Tap the microphone or type to start talking.');
+        initVAD();
     })();
     </script>
 </body>

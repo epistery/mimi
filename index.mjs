@@ -1,9 +1,12 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'fs';
+import { execFile } from 'child_process';
+import { randomBytes } from 'crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { Config } from 'epistery';
+import { createSTTProvider } from './stt.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,7 +24,9 @@ export default class MimiAgent {
     this.conversations = new Map();   // sessionId -> message history
     this.pendingRequests = new Map();  // continuationToken -> pending state
     this.anthropic = null;
+    this.sttProvider = null;
     this.internalPort = null;
+    this.audioDir = null;
   }
 
   /**
@@ -57,9 +62,72 @@ export default class MimiAgent {
   }
 
   /**
-   * Proxy a tool call to an internal epistery agent via HTTP
-   * Same pattern as MCPTools.mjs createHandlers()
+   * Lazy-init STT provider from domain config
    */
+  getSTTProvider(domain) {
+    if (this.sttProvider) return this.sttProvider;
+    this.sttProvider = createSTTProvider(domain);
+    return this.sttProvider;
+  }
+
+  /**
+   * Create and return temp dir for TTS audio files
+   */
+  getAudioDir() {
+    if (this.audioDir) return this.audioDir;
+    this.audioDir = '/tmp/mimi-audio';
+    if (!existsSync(this.audioDir)) {
+      mkdirSync(this.audioDir, { recursive: true });
+    }
+    return this.audioDir;
+  }
+
+  /**
+   * Generate TTS audio via espeak-ng, returns audio ID
+   * Auto-cleanup after 5 minutes
+   */
+  generateTTS(text) {
+    return new Promise((resolve, reject) => {
+      const id = randomBytes(12).toString('hex');
+      const dir = this.getAudioDir();
+      const filePath = path.join(dir, `${id}.wav`);
+
+      // Strip markdown formatting for cleaner speech
+      const clean = text
+        .replace(/[*_~`#>\[\]]/g, '')
+        .replace(/\n+/g, '. ')
+        .substring(0, 2000);
+
+      execFile('espeak-ng', ['-w', filePath, clean], (err) => {
+        if (err) {
+          console.error('[mimi] espeak-ng error:', err.message);
+          return reject(err);
+        }
+        // Auto-cleanup after 5 minutes
+        setTimeout(() => {
+          try { unlinkSync(filePath); } catch (_) {}
+        }, 5 * 60 * 1000);
+        resolve(id);
+      });
+    });
+  }
+
+  /**
+   * Check if transcribed text starts with the wake word "mimi"
+   * Returns { matched: boolean, command: string }
+   */
+  checkWakeWord(text) {
+    const lower = text.toLowerCase().trim();
+    // Match "mimi", "hey mimi", "hi mimi", "ok mimi", "okay mimi"
+    const match = lower.match(/^(?:hey|hi|ok(?:ay)?)\s*[,.]?\s*mimi[,.\s!]*(.*)$/i)
+      || lower.match(/^mimi[,.\s!]*(.*)$/i);
+    if (match) {
+      const command = match[1]?.trim() || '';
+      return { matched: true, command };
+    }
+    return { matched: false, command: '' };
+  }
+
   /**
    * Snapshot the request headers we need for internal proxying.
    * Must be called synchronously during the request handler,
@@ -417,6 +485,94 @@ export default class MimiAgent {
       res.sendFile(path.join(__dirname, 'client/portal.html'));
     });
 
+    // Serve TTS audio files
+    router.get('/audio/:id', (req, res) => {
+      const filePath = path.join(this.getAudioDir(), `${req.params.id}.wav`);
+      if (!existsSync(filePath)) {
+        return res.status(404).json({ error: 'Audio not found' });
+      }
+      res.set('Content-Type', 'audio/wav');
+      res.sendFile(filePath);
+    });
+
+    // Voice audio endpoint — receive WAV, transcribe, check wake word
+    router.post('/audio', async (req, res) => {
+      try {
+        const permissions = await this.getPermissions(req);
+        if (!permissions.read) {
+          return res.status(403).json({ error: 'Permission required' });
+        }
+
+        const { audio, sessionId } = req.body;
+        if (!audio) {
+          return res.status(400).json({ status: 'error', message: 'No audio data' });
+        }
+
+        // Decode base64 WAV
+        const audioBuffer = Buffer.from(audio, 'base64');
+
+        // Transcribe via STT provider
+        let text;
+        try {
+          const stt = this.getSTTProvider(req.domain);
+          text = await stt.transcribe(audioBuffer);
+        } catch (err) {
+          console.error('[mimi] STT error:', err.message);
+          return res.json({ status: 'error', message: 'Transcription failed: ' + err.message });
+        }
+
+        if (!text || !text.trim()) {
+          return res.json({ status: 'ignored', reason: 'empty' });
+        }
+
+        console.log(`[mimi] Transcribed: "${text}"`);
+
+        // Check wake word
+        const wake = this.checkWakeWord(text);
+        if (!wake.matched) {
+          return res.json({ status: 'ignored', reason: 'no-wake-word', text });
+        }
+
+        // Use the command after the wake word, or fall back to full text if no command
+        const message = wake.command || text;
+        console.log(`[mimi] Wake word matched, command: "${message}"`);
+
+        // Get or initialize conversation
+        const convKey = sessionId || `mimi-${req.episteryClient?.address || 'anon'}-${Date.now()}`;
+        if (!this.conversations.has(convKey)) {
+          this.conversations.set(convKey, []);
+        }
+        const history = this.conversations.get(convKey);
+        history.push({ role: 'user', content: message });
+
+        // Generate continuation token
+        const token = `${convKey}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const pendingState = {
+          sessionId: convKey,
+          completed: false,
+          progress: 'Starting...',
+          response: null,
+          error: null,
+          isVoice: true
+        };
+        this.pendingRequests.set(token, pendingState);
+
+        const reqCtx = this.captureRequestContext(req);
+        this.processMessage(reqCtx, history, convKey, pendingState, token);
+
+        res.json({
+          status: 'working',
+          continuationToken: token,
+          sessionId: convKey,
+          text: message,
+          progress: pendingState.progress
+        });
+      } catch (error) {
+        console.error('[mimi] Audio endpoint error:', error);
+        res.status(500).json({ status: 'error', message: error.message });
+      }
+    });
+
     // Message endpoint - Claude relay with continuation tokens
     router.post('/message', async (req, res) => {
       try {
@@ -567,11 +723,24 @@ User wallet address: ${userAddress}`;
         this.conversations.set(convKey, history.slice(-20));
       }
 
+      // Generate TTS audio for voice requests
+      let audioUrl = null;
+      if (pendingState.isVoice) {
+        try {
+          pendingState.progress = 'Generating speech...';
+          const audioId = await this.generateTTS(assistantContent);
+          audioUrl = `audio/${audioId}`;
+        } catch (err) {
+          console.error('[mimi] TTS generation failed:', err.message);
+        }
+      }
+
       pendingState.completed = true;
       pendingState.response = {
         role: 'assistant',
         content: assistantContent,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        ...(audioUrl && { audioUrl })
       };
       pendingState.progress = 'Complete';
 
