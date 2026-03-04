@@ -10,14 +10,20 @@ class WhisperAPIProvider {
   }
 
   async transcribe(audioBuffer, options = {}) {
-    const file = new File([audioBuffer], 'audio.wav', { type: 'audio/wav' });
-    const result = await this.client.audio.transcriptions.create({
-      model: 'whisper-1',
-      file,
-      language: options.language || 'en',
-      response_format: 'text'
-    });
-    return result.trim();
+    const blob = new Blob([audioBuffer], { type: 'audio/wav' });
+    const file = new File([blob], 'audio.wav', { type: 'audio/wav' });
+    try {
+      const result = await this.client.audio.transcriptions.create({
+        model: 'whisper-1',
+        file,
+        language: options.language || 'en',
+        response_format: 'text'
+      });
+      return result.trim();
+    } catch (err) {
+      console.error('[mimi-stt] Whisper API error:', err.status, err.message, err.code);
+      throw err;
+    }
   }
 }
 
