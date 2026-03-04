@@ -223,7 +223,11 @@
     async function loadWhisperStatus() {
       try {
         const res = await fetch(API_BASE + 'admin/whisper');
-        if (!res.ok) return;
+        if (!res.ok) {
+          document.getElementById('whisper-status').innerHTML =
+            '<strong>STT Mode:</strong> <span style="color:var(--text-color-quiet)">Unavailable (restart server to enable)</span>';
+          return;
+        }
         const data = await res.json();
 
         const statusEl = document.getElementById('whisper-status');
@@ -251,6 +255,8 @@
         document.getElementById('whisper-progress').style.display = 'none';
       } catch (err) {
         console.error('[mimi-admin] Whisper status error:', err);
+        document.getElementById('whisper-status').innerHTML =
+          '<strong>STT Mode:</strong> <span style="color:var(--text-color-quiet)">Error checking status</span>';
       }
     }
 
