@@ -117,10 +117,22 @@
         <div class="config-row">
           <label>API Key</label>
           <input type="password" id="claude-key" placeholder="sk-ant-..." autocomplete="off">
-          <button class="btn btn-primary" onclick="saveKey()">Save</button>
+          <button class="btn btn-primary" onclick="saveKey('claude')">Save</button>
         </div>
         <div style="font-size:0.8em; color:var(--text-color-quiet); margin-top:0.5em;">
           Stored in domain config. Required for Mimi to relay messages through Claude.
+        </div>
+      </div>
+
+      <div class="console-panel">
+        <h2>OpenAI API Key</h2>
+        <div class="config-row">
+          <label>API Key</label>
+          <input type="password" id="openai-key" placeholder="sk-..." autocomplete="off">
+          <button class="btn btn-primary" onclick="saveKey('openai')">Save</button>
+        </div>
+        <div style="font-size:0.8em; color:var(--text-color-quiet); margin-top:0.5em;">
+          Stored in domain config. Required for speech-to-text transcription (Whisper).
         </div>
       </div>
     </div>
@@ -142,7 +154,7 @@
       }
     }
 
-    async function loadKey() {
+    async function loadKeys() {
       try {
         const response = await fetch(API_BASE + 'admin/key');
         if (!response.ok) return;
@@ -150,20 +162,24 @@
         if (data.hasKey) {
           document.getElementById('claude-key').placeholder = 'Key is set (enter new value to change)';
         }
+        if (data.hasOpenAIKey) {
+          document.getElementById('openai-key').placeholder = 'Key is set (enter new value to change)';
+        }
       } catch (error) {
         console.error('[mimi-admin] Key check error:', error);
       }
     }
 
-    async function saveKey() {
-      const key = document.getElementById('claude-key').value.trim();
+    async function saveKey(provider) {
+      const inputId = provider === 'openai' ? 'openai-key' : 'claude-key';
+      const key = document.getElementById(inputId).value.trim();
       if (!key) return;
 
       try {
         const response = await fetch(API_BASE + 'admin/key', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ key })
+          body: JSON.stringify({ key, provider })
         });
 
         if (!response.ok) {
@@ -171,11 +187,11 @@
           throw new Error(err.error || `HTTP ${response.status}`);
         }
 
-        document.getElementById('claude-key').value = '';
-        document.getElementById('claude-key').placeholder = 'Key is set (enter new value to change)';
+        document.getElementById(inputId).value = '';
+        document.getElementById(inputId).placeholder = 'Key is set (enter new value to change)';
 
         const successEl = document.getElementById('success');
-        successEl.textContent = 'API key saved.';
+        successEl.textContent = (provider === 'openai' ? 'OpenAI' : 'Claude') + ' API key saved.';
         successEl.style.display = 'block';
         setTimeout(() => { successEl.style.display = 'none'; }, 3000);
       } catch (error) {
@@ -187,7 +203,7 @@
     }
 
     loadStatus();
-    loadKey();
+    loadKeys();
   </script>
 </body>
 </html>

@@ -433,7 +433,7 @@ export default class MimiAgent {
       res.sendFile(path.join(__dirname, 'client/admin.html'));
     });
 
-    // Admin: check if key is set
+    // Admin: check if keys are set
     router.get('/admin/key', async (req, res) => {
       const permissions = await this.getPermissions(req);
       if (!permissions.admin) {
@@ -442,7 +442,8 @@ export default class MimiAgent {
       const cfg = new Config();
       cfg.setPath(req.hostname || 'localhost');
       const hasKey = !!(cfg.data?.anthropic_api_key || cfg.data?.claude?.anthropicKey);
-      res.json({ hasKey });
+      const hasOpenAIKey = !!(cfg.data?.openai?.apikey);
+      res.json({ hasKey, hasOpenAIKey });
     });
 
     // Admin: save key
@@ -451,18 +452,27 @@ export default class MimiAgent {
       if (!permissions.admin) {
         return res.status(403).json({ error: 'Admin access required' });
       }
-      const { key } = req.body;
+      const { key, provider } = req.body;
       if (!key || !key.startsWith('sk-')) {
         return res.status(400).json({ error: 'Invalid API key' });
       }
       const domain = req.hostname || 'localhost';
       const cfg = new Config();
       cfg.setPath(domain);
-      if (!cfg.data.claude) cfg.data.claude = {};
-      cfg.data.claude.anthropicKey = key;
+
+      if (provider === 'openai') {
+        if (!cfg.data.openai) cfg.data.openai = {};
+        cfg.data.openai.apikey = key;
+        // Reset cached STT provider so next request picks up new key
+        this.sttProvider = null;
+      } else {
+        if (!cfg.data.claude) cfg.data.claude = {};
+        cfg.data.claude.anthropicKey = key;
+        // Reset cached client so next request picks up new key
+        this.anthropic = null;
+      }
+
       cfg.save();
-      // Reset cached client so next request picks up new key
-      this.anthropic = null;
       res.json({ success: true });
     });
 
