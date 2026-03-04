@@ -295,7 +295,7 @@
 
         let sessionId = null;
         let isMuted = false;
-        let vad = null;
+        let vadInstance = null;
         let currentAudio = null; // <audio> element for TTS playback
 
         // State machine: idle -> hearing -> transcribing -> thinking -> speaking -> idle
@@ -563,9 +563,9 @@
             document.getElementById('muteWave1').style.display = isMuted ? 'none' : '';
             document.getElementById('muteWave2').style.display = isMuted ? 'none' : '';
 
-            if (vad) {
+            if (vadInstance) {
                 if (isMuted) {
-                    vad.pause();
+                    vadInstance.pause();
                     setState('muted');
                     // Stop any playing audio
                     if (currentAudio) {
@@ -573,7 +573,7 @@
                         currentAudio = null;
                     }
                 } else {
-                    vad.start();
+                    vadInstance.start();
                     setState('idle');
                 }
             }
@@ -581,14 +581,14 @@
 
         // ---- VAD initialization ----
         async function initVAD() {
-            if (typeof vad_web === 'undefined') {
+            if (typeof vad === 'undefined') {
                 addMessage('error', 'VAD library failed to load. Check network connection.');
                 statusText.textContent = 'VAD unavailable';
                 return;
             }
 
             try {
-                vad = await vad_web.MicVAD.new({
+                vadInstance = await vad.MicVAD.new({
                     positiveSpeechThreshold: 0.8,
                     negativeSpeechThreshold: 0.15,
                     minSpeechFrames: 8,         // ~0.5s at 16kHz / 512 frame size
@@ -617,7 +617,7 @@
                     }
                 });
 
-                vad.start();
+                vadInstance.start();
                 setState('idle');
                 addMessage('system', 'Listening for "Mimi" wake word. Say "Mimi" followed by your request.');
             } catch (err) {
