@@ -132,7 +132,23 @@
           <button class="btn btn-primary" onclick="saveKey('openai')">Save</button>
         </div>
         <div style="font-size:0.8em; color:var(--text-color-quiet); margin-top:0.5em;">
-          Stored in domain config. Required for speech-to-text transcription (Whisper).
+          Stored in domain config. Fallback for speech-to-text when local whisper is not installed.
+        </div>
+      </div>
+
+      <div class="console-panel">
+        <h2>Local Transcription (whisper.cpp)</h2>
+        <div id="whisper-status" style="margin-bottom:var(--spacer);">
+          Loading...
+        </div>
+        <div id="whisper-actions" style="display:flex; gap:1em; align-items:center; margin-bottom:var(--spacer);">
+        </div>
+        <div id="whisper-progress" style="display:none; margin-bottom:var(--spacer);">
+          <div style="font-weight:500; margin-bottom:0.5em;">Install Progress:</div>
+          <pre id="whisper-log" style="background:var(--bg-color-quiet); padding:1em; border-radius:4px; max-height:200px; overflow-y:auto; font-size:0.8em; white-space:pre-wrap;"></pre>
+        </div>
+        <div style="font-size:0.8em; color:var(--text-color-quiet);">
+          Compiles whisper.cpp from source for this device. Requires ~500MB during build, ~200MB after cleanup. Build takes 2-3 minutes on ARM.
         </div>
       </div>
     </div>
@@ -202,8 +218,128 @@
       }
     }
 
+    let whisperPollTimer = null;
+
+    async function loadWhisperStatus() {
+      try {
+        const res = await fetch(API_BASE + 'admin/whisper');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const statusEl = document.getElementById('whisper-status');
+        const actionsEl = document.getElementById('whisper-actions');
+
+        if (data.installing) {
+          statusEl.innerHTML = '<strong>STT Mode:</strong> Installing...';
+          actionsEl.innerHTML = '';
+          startWhisperPoll();
+          return;
+        }
+
+        if (data.installed) {
+          statusEl.innerHTML = '<strong>STT Mode:</strong> Local whisper.cpp (no API costs)';
+          actionsEl.innerHTML = '<button class="btn" style="background:#cc4444;color:white;" onclick="uninstallWhisper()">Uninstall</button>';
+        } else if (data.sttMode === 'openai') {
+          statusEl.innerHTML = '<strong>STT Mode:</strong> OpenAI Whisper API';
+          actionsEl.innerHTML = '<button class="btn btn-primary" onclick="installWhisper()">Install Local Whisper</button>';
+        } else {
+          statusEl.innerHTML = '<strong>STT Mode:</strong> Not configured';
+          actionsEl.innerHTML = '<button class="btn btn-primary" onclick="installWhisper()">Install Local Whisper</button>';
+        }
+
+        // Hide progress panel when not installing
+        document.getElementById('whisper-progress').style.display = 'none';
+      } catch (err) {
+        console.error('[mimi-admin] Whisper status error:', err);
+      }
+    }
+
+    async function installWhisper() {
+      try {
+        const res = await fetch(API_BASE + 'admin/whisper/install', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+          const errorEl = document.getElementById('error');
+          errorEl.textContent = data.error || 'Install failed';
+          errorEl.style.display = 'block';
+          setTimeout(() => { errorEl.style.display = 'none'; }, 5000);
+          return;
+        }
+
+        document.getElementById('whisper-status').innerHTML = '<strong>STT Mode:</strong> Installing...';
+        document.getElementById('whisper-actions').innerHTML = '';
+        document.getElementById('whisper-progress').style.display = 'block';
+        document.getElementById('whisper-log').textContent = 'Starting installation...\n';
+        startWhisperPoll();
+      } catch (err) {
+        console.error('[mimi-admin] Install error:', err);
+      }
+    }
+
+    function startWhisperPoll() {
+      if (whisperPollTimer) return;
+      document.getElementById('whisper-progress').style.display = 'block';
+      whisperPollTimer = setInterval(pollWhisperProgress, 2000);
+      pollWhisperProgress();
+    }
+
+    async function pollWhisperProgress() {
+      try {
+        const res = await fetch(API_BASE + 'admin/whisper/progress');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const logEl = document.getElementById('whisper-log');
+        logEl.textContent = data.progress.join('\n');
+        logEl.scrollTop = logEl.scrollHeight;
+
+        if (!data.installing) {
+          clearInterval(whisperPollTimer);
+          whisperPollTimer = null;
+          loadWhisperStatus();
+          // Check if last message indicates success
+          const last = data.progress[data.progress.length - 1] || '';
+          if (last.startsWith('ERROR:')) {
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = last;
+            errorEl.style.display = 'block';
+            setTimeout(() => { errorEl.style.display = 'none'; }, 8000);
+          } else {
+            const successEl = document.getElementById('success');
+            successEl.textContent = 'Local whisper installed successfully.';
+            successEl.style.display = 'block';
+            setTimeout(() => { successEl.style.display = 'none'; }, 5000);
+          }
+        }
+      } catch (err) {
+        console.error('[mimi-admin] Progress poll error:', err);
+      }
+    }
+
+    async function uninstallWhisper() {
+      if (!confirm('Uninstall local whisper? STT will fall back to OpenAI API.')) return;
+      try {
+        const res = await fetch(API_BASE + 'admin/whisper/uninstall', { method: 'POST' });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        const successEl = document.getElementById('success');
+        successEl.textContent = 'Local whisper uninstalled. Using OpenAI API.';
+        successEl.style.display = 'block';
+        setTimeout(() => { successEl.style.display = 'none'; }, 5000);
+        loadWhisperStatus();
+      } catch (err) {
+        const errorEl = document.getElementById('error');
+        errorEl.textContent = 'Uninstall failed: ' + err.message;
+        errorEl.style.display = 'block';
+        setTimeout(() => { errorEl.style.display = 'none'; }, 5000);
+      }
+    }
+
     loadStatus();
     loadKeys();
+    loadWhisperStatus();
   </script>
 </body>
 </html>

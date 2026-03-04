@@ -277,6 +277,25 @@
         let vadInstance = null;
         let currentAudio = null; // <audio> element for TTS playback
         let synthesis = window.speechSynthesis;
+        let audioCtx = null; // Web Audio API context, unlocked on first interaction
+
+        // Unlock audio on first user gesture (required by mobile browsers)
+        function ensureAudioContext() {
+            if (audioCtx) return audioCtx;
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            // Play a silent buffer to fully unlock
+            const silent = audioCtx.createBuffer(1, 1, 22050);
+            const src = audioCtx.createBufferSource();
+            src.buffer = silent;
+            src.connect(audioCtx.destination);
+            src.start();
+            console.log('[Mimi] AudioContext unlocked');
+            return audioCtx;
+        }
+        // Attach to common user gestures
+        ['click', 'touchstart', 'keydown'].forEach(evt => {
+            document.addEventListener(evt, ensureAudioContext, { once: true });
+        });
 
         // State machine: idle (dormant, background wake-word check) -> thinking -> speaking -> idle
         let state = 'idle';
@@ -448,36 +467,35 @@
             });
         }
 
-        // ---- Play server TTS WAV, fall back to speechSynthesis ----
+        // ---- Play server TTS WAV via Web Audio API (bypasses autoplay restrictions) ----
         function playAudio(url, fallbackText) {
             if (isMuted) return Promise.resolve();
-            return new Promise((resolve) => {
+            return new Promise(async (resolve) => {
                 setState('speaking');
-                if (currentAudio) {
-                    currentAudio.pause();
-                    currentAudio = null;
-                }
                 const audioUrl = './' + url;
                 console.log('[Mimi] Playing audio:', audioUrl);
-                const audio = new Audio(audioUrl);
-                currentAudio = audio;
-                audio.onended = () => {
-                    console.log('[Mimi] Audio playback complete');
-                    currentAudio = null;
-                    resolve();
-                };
-                audio.onerror = (e) => {
+                try {
+                    const ctx = ensureAudioContext();
+                    if (ctx.state === 'suspended') await ctx.resume();
+                    const resp = await fetch(audioUrl);
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    const arrayBuffer = await resp.arrayBuffer();
+                    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+                    const source = ctx.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(ctx.destination);
+                    source.onended = () => {
+                        console.log('[Mimi] Audio playback complete');
+                        resolve();
+                    };
+                    source.start();
+                    currentAudio = source;
+                    console.log('[Mimi] Audio play started via Web Audio API');
+                } catch (e) {
                     console.error('[Mimi] WAV playback failed:', e);
                     currentAudio = null;
                     speak(fallbackText || '').then(resolve);
-                };
-                audio.play().then(() => {
-                    console.log('[Mimi] Audio play started');
-                }).catch((e) => {
-                    console.error('[Mimi] Audio play rejected:', e);
-                    currentAudio = null;
-                    speak(fallbackText || '').then(resolve);
-                });
+                }
             });
         }
 
@@ -582,7 +600,7 @@
                     // Stop any playing audio
                     if (synthesis) synthesis.cancel();
                     if (currentAudio) {
-                        currentAudio.pause();
+                        try { currentAudio.stop(); } catch(_) {}
                         currentAudio = null;
                     }
                 } else {

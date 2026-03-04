@@ -7,6 +7,8 @@ import { randomBytes } from 'crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { Config } from 'epistery';
 import { createSTTProvider } from './stt.mjs';
+import { installWhisper, uninstallWhisper, checkWhisperInstall } from './install-whisper.mjs';
+import { homedir } from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,6 +29,8 @@ export default class MimiAgent {
     this.sttProvider = null;
     this.internalPort = null;
     this.audioDir = null;
+    this.whisperInstalling = false;
+    this.whisperProgress = [];
   }
 
   /**
@@ -474,6 +478,108 @@ export default class MimiAgent {
 
       cfg.save();
       res.json({ success: true });
+    });
+
+    // Admin: whisper install status
+    router.get('/admin/whisper', async (req, res) => {
+      const permissions = await this.getPermissions(req);
+      if (!permissions.admin) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      const whisperDir = path.join(homedir(), '.epistery', 'whisper');
+      const status = checkWhisperInstall(whisperDir);
+      // Check which STT mode is active
+      const cfg = new Config();
+      cfg.setPath(req.hostname || 'localhost');
+      const hasLocal = status.installed;
+      const hasOpenAI = !!(cfg.data?.openai?.apikey || process.env.OPENAI_API_KEY);
+      res.json({
+        ...status,
+        installing: this.whisperInstalling,
+        sttMode: hasLocal ? 'local' : (hasOpenAI ? 'openai' : 'none')
+      });
+    });
+
+    // Admin: install whisper
+    router.post('/admin/whisper/install', async (req, res) => {
+      const permissions = await this.getPermissions(req);
+      if (!permissions.admin) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      if (this.whisperInstalling) {
+        return res.status(409).json({ error: 'Installation already in progress' });
+      }
+
+      const domain = req.hostname || 'localhost';
+      const whisperDir = path.join(homedir(), '.epistery', 'whisper');
+      this.whisperInstalling = true;
+      this.whisperProgress = ['Starting installation...'];
+
+      // Kick off install in background
+      installWhisper(whisperDir, (msg) => {
+        this.whisperProgress.push(msg);
+        console.log(`[mimi-whisper] ${msg}`);
+      }).then(({ binaryPath, modelPath }) => {
+        // Save to domain config
+        const cfg = new Config();
+        cfg.setPath(domain);
+        if (!cfg.data.whisper) cfg.data.whisper = {};
+        cfg.data.whisper.binary = binaryPath;
+        cfg.data.whisper.model = modelPath;
+        cfg.data.whisper.threads = '4';
+        cfg.save();
+
+        // Reset STT provider so next request picks up local
+        this.sttProvider = null;
+        this.whisperProgress.push('Installation complete. Local whisper is now active.');
+        this.whisperInstalling = false;
+      }).catch((err) => {
+        console.error('[mimi-whisper] Install failed:', err);
+        this.whisperProgress.push(`ERROR: ${err.message}`);
+        this.whisperInstalling = false;
+      });
+
+      res.json({ success: true, message: 'Installation started' });
+    });
+
+    // Admin: poll install progress
+    router.get('/admin/whisper/progress', async (req, res) => {
+      const permissions = await this.getPermissions(req);
+      if (!permissions.admin) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      res.json({
+        installing: this.whisperInstalling,
+        progress: this.whisperProgress
+      });
+    });
+
+    // Admin: uninstall whisper
+    router.post('/admin/whisper/uninstall', async (req, res) => {
+      const permissions = await this.getPermissions(req);
+      if (!permissions.admin) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      if (this.whisperInstalling) {
+        return res.status(409).json({ error: 'Installation in progress, cannot uninstall' });
+      }
+
+      const domain = req.hostname || 'localhost';
+      const whisperDir = path.join(homedir(), '.epistery', 'whisper');
+
+      uninstallWhisper(whisperDir);
+
+      // Clear config
+      const cfg = new Config();
+      cfg.setPath(domain);
+      delete cfg.data.whisper;
+      cfg.save();
+
+      // Reset STT provider to fall back to OpenAI
+      this.sttProvider = null;
+      this.whisperProgress = [];
+
+      res.json({ success: true, message: 'Whisper uninstalled. Falling back to OpenAI API.' });
     });
 
     // Main portal page
