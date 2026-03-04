@@ -619,7 +619,7 @@ export default class MimiAgent {
           return res.status(403).json({ error: 'Permission required' });
         }
 
-        const { audio, sessionId } = req.body;
+        const { audio, sessionId, attentive } = req.body;
         if (!audio) {
           return res.status(400).json({ status: 'error', message: 'No audio data' });
         }
@@ -643,14 +643,20 @@ export default class MimiAgent {
 
         console.log(`[mimi] Transcribed: "${text}"`);
 
-        // Check wake word
-        const wake = this.checkWakeWord(text);
-        if (!wake.matched) {
-          return res.json({ status: 'ignored', reason: 'no-wake-word', text });
+        // In attentive mode (post-response window), skip wake word check
+        let message;
+        if (attentive) {
+          console.log(`[mimi] Attentive mode, skipping wake word check`);
+          // Still strip wake word if present, but don't require it
+          const wake = this.checkWakeWord(text);
+          message = wake.matched ? (wake.command || text) : text;
+        } else {
+          const wake = this.checkWakeWord(text);
+          if (!wake.matched) {
+            return res.json({ status: 'ignored', reason: 'no-wake-word', text });
+          }
+          message = wake.command || text;
         }
-
-        // Use the command after the wake word, or fall back to full text if no command
-        const message = wake.command || text;
         console.log(`[mimi] Wake word matched, command: "${message}"`);
 
         // Get or initialize conversation

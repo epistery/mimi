@@ -371,6 +371,21 @@
             }
         }
 
+        // ---- Attentive mode: after Mimi speaks, listen without wake word for 10s ----
+        let attentive = false;
+        let attentiveTimer = null;
+
+        function startAttentiveMode() {
+            attentive = true;
+            if (attentiveTimer) clearTimeout(attentiveTimer);
+            attentiveTimer = setTimeout(() => {
+                attentive = false;
+                attentiveTimer = null;
+                if (state === 'idle') statusText.textContent = 'Say "Mimi" to wake';
+            }, 10000);
+            statusText.textContent = 'Listening...';
+        }
+
         // ---- Send audio to server (silent until wake word matches) ----
         let audioBusy = false;
         async function sendAudio(float32Samples) {
@@ -393,7 +408,7 @@
                 const resp = await fetch('./audio', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ audio: base64, sessionId })
+                    body: JSON.stringify({ audio: base64, sessionId, attentive })
                 });
                 const data = await resp.json();
 
@@ -411,7 +426,9 @@
                     return;
                 }
 
-                // Wake word matched — NOW show activity
+                // Matched (wake word or attentive) — NOW show activity
+                attentive = false;
+                if (attentiveTimer) { clearTimeout(attentiveTimer); attentiveTimer = null; }
                 if (data.text) {
                     addMessage('user', data.text);
                 }
@@ -440,6 +457,7 @@
 
             audioBusy = false;
             setState('idle');
+            startAttentiveMode();
         }
 
         // ---- TTS via speechSynthesis ----
