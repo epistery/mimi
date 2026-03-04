@@ -134,19 +134,6 @@
         }
         .status-orb.idle svg { stroke: var(--text-color-quiet); }
 
-        .status-orb.hearing {
-            border-color: var(--primary);
-            background: rgba(45, 80, 22, 0.1);
-            animation: pulse 1.2s infinite;
-        }
-        .status-orb.hearing svg { stroke: var(--primary); }
-
-        .status-orb.transcribing {
-            border-color: var(--accent, #e8a030);
-            animation: pulse-amber 1.5s infinite;
-        }
-        .status-orb.transcribing svg { stroke: var(--accent, #e8a030); }
-
         .status-orb.thinking {
             border-color: var(--rust-mid, #a04020);
             animation: pulse-rust 2s infinite;
@@ -165,14 +152,6 @@
             opacity: 0.5;
         }
 
-        @keyframes pulse {
-            0%, 100% { box-shadow: 0 0 0 0 rgba(45, 80, 22, 0.4); }
-            50% { box-shadow: 0 0 0 16px rgba(45, 80, 22, 0); }
-        }
-        @keyframes pulse-amber {
-            0%, 100% { box-shadow: 0 0 0 0 rgba(232, 160, 48, 0.3); }
-            50% { box-shadow: 0 0 0 12px rgba(232, 160, 48, 0); }
-        }
         @keyframes pulse-rust {
             0%, 100% { box-shadow: 0 0 0 0 rgba(160, 64, 32, 0.3); }
             50% { box-shadow: 0 0 0 12px rgba(160, 64, 32, 0); }
@@ -298,7 +277,7 @@
         let vadInstance = null;
         let currentAudio = null; // <audio> element for TTS playback
 
-        // State machine: idle -> hearing -> transcribing -> thinking -> speaking -> idle
+        // State machine: idle (dormant, background wake-word check) -> thinking -> speaking -> idle
         let state = 'idle';
 
         function setState(newState, detail) {
@@ -307,16 +286,8 @@
             orbLabel.textContent = newState;
             switch (newState) {
                 case 'idle':
-                    statusText.textContent = 'Listening...';
+                    statusText.textContent = 'Say "Mimi" to wake';
                     listenIndicator.textContent = '';
-                    break;
-                case 'hearing':
-                    statusText.textContent = 'Hearing speech...';
-                    listenIndicator.textContent = 'Detecting speech...';
-                    break;
-                case 'transcribing':
-                    statusText.textContent = 'Transcribing...';
-                    listenIndicator.textContent = 'Sending audio...';
                     break;
                 case 'thinking':
                     statusText.textContent = detail || 'Thinking...';
@@ -380,10 +351,13 @@
             }
         }
 
-        // ---- Send audio to server ----
+        // ---- Send audio to server (silent until wake word matches) ----
+        let audioBusy = false;
         async function sendAudio(float32Samples) {
-            if (state === 'muted') return;
-            setState('transcribing');
+            if (state === 'muted' || audioBusy) return;
+            audioBusy = true;
+
+            // Stay in idle — don't show any state change for background wake-word checks
 
             try {
                 // Encode as WAV, then base64
@@ -395,7 +369,7 @@
                 }
                 const base64 = btoa(binary);
 
-                // POST to server
+                // POST to server — this transcribes and checks wake word
                 const resp = await fetch('./audio', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -405,24 +379,23 @@
 
                 if (data.sessionId) sessionId = data.sessionId;
 
+                // No wake word or empty — stay dormant, no UI change
                 if (data.status === 'ignored') {
-                    // No wake word — return to idle silently
-                    setState('idle');
+                    audioBusy = false;
                     return;
                 }
 
                 if (data.status === 'error') {
                     addMessage('error', data.message || 'Audio processing failed');
-                    setState('idle');
+                    audioBusy = false;
                     return;
                 }
 
-                // Show what was heard
+                // Wake word matched — NOW show activity
                 if (data.text) {
                     addMessage('user', data.text);
                 }
 
-                // Poll for result
                 if (data.status === 'working' && data.continuationToken) {
                     setState('thinking');
                     const result = await pollForResult(data.continuationToken);
@@ -433,7 +406,6 @@
                         const content = result.response.content || result.response;
                         addMessage('assistant', content);
 
-                        // Play TTS audio if available
                         if (result.response.audioUrl) {
                             await playAudio(result.response.audioUrl);
                         }
@@ -444,6 +416,7 @@
                 addMessage('error', 'Failed to process audio');
             }
 
+            audioBusy = false;
             setState('idle');
         }
 
@@ -596,9 +569,8 @@
                     redemptionFrames: 16,        // ~500ms silence before cutoff
 
                     onSpeechStart: () => {
-                        if (!isMuted && state === 'idle') {
-                            setState('hearing');
-                        }
+                        // Stay dormant — no visible state change
+                        // The orb only wakes up after wake word is confirmed
                     },
 
                     onSpeechEnd: (audio) => {
@@ -606,14 +578,13 @@
                         // audio is Float32Array at 16kHz
                         if (audio.length < 8000) {
                             // Less than 0.5s — too short, ignore
-                            setState('idle');
                             return;
                         }
                         sendAudio(audio);
                     },
 
                     onVADMisfire: () => {
-                        if (state === 'hearing') setState('idle');
+                        // Nothing to do — orb is already idle
                     }
                 });
 
