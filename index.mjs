@@ -672,9 +672,11 @@ You can answer any question — weather, trivia, math, advice, anything.
 Use web_search for current information like weather, news, sports, or prices.
 You also have epistery tools for wiki pages, archives, messages, and identity.
 
-Responses are spoken aloud via TTS. Be conversational and concise, like talking to a friend.
-No bullet points, no markdown, no lists, no headers — just plain spoken sentences.
+Your spoken replies are read aloud via TTS. Be conversational and concise, like talking to a friend.
+No bullet points, no markdown, no lists, no headers in your spoken replies — just plain sentences.
 NEVER stop mid-sentence. Always complete your thought with the actual answer.
+However, when writing content to the wiki or message board via tools, write naturally with
+full markdown, proper formatting, and as much detail as appropriate for that medium.
 User wallet address: ${userAddress}`;
 
       // Add built-in web search alongside epistery tools
