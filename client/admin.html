@@ -151,6 +151,18 @@
           Compiles whisper.cpp from source for this device. Requires ~500MB during build, ~200MB after cleanup. Build takes 2-3 minutes on ARM.
         </div>
       </div>
+
+      <div class="console-panel">
+        <h2>Voice</h2>
+        <div style="display:flex; gap:1em; align-items:center; margin-bottom:var(--spacer);">
+          <select id="voice-select" style="flex:1; padding:0.5em; border:1px solid var(--page-border); border-radius:4px; font-size:0.875em;">
+            <option value="">Loading voices...</option>
+          </select>
+          <button class="btn" style="background:var(--bg-color-quiet);" onclick="previewVoice()">Preview</button>
+          <button class="btn btn-primary" onclick="saveVoice()">Save</button>
+        </div>
+        <div id="voice-info" style="font-size:0.8em; color:var(--text-color-quiet);"></div>
+      </div>
     </div>
   </main>
 
@@ -343,9 +355,75 @@
       }
     }
 
+    async function loadVoices() {
+      try {
+        const res = await fetch(API_BASE + 'admin/voices');
+        if (!res.ok) {
+          document.getElementById('voice-info').textContent = 'Could not load voices (restart server to enable)';
+          return;
+        }
+        const data = await res.json();
+        const select = document.getElementById('voice-select');
+        select.innerHTML = '<option value="">(default)</option>';
+        for (const v of data.voices) {
+          const opt = document.createElement('option');
+          opt.value = v.name;
+          opt.textContent = `${v.name} — ${v.language} ${v.gender}`;
+          if (v.name === data.current) opt.selected = true;
+          select.appendChild(opt);
+        }
+        const current = data.current || 'default';
+        document.getElementById('voice-info').textContent = `Current voice: ${current}`;
+      } catch (err) {
+        console.error('[mimi-admin] Voice load error:', err);
+        document.getElementById('voice-info').textContent = 'Error loading voices';
+      }
+    }
+
+    async function previewVoice() {
+      const voice = document.getElementById('voice-select').value;
+      try {
+        const res = await fetch(API_BASE + 'admin/voices/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ voice: voice || null })
+        });
+        if (!res.ok) throw new Error('Preview failed');
+        const data = await res.json();
+        const audio = new Audio('./' + data.audioUrl);
+        audio.play();
+      } catch (err) {
+        console.error('[mimi-admin] Preview error:', err);
+      }
+    }
+
+    async function saveVoice() {
+      const voice = document.getElementById('voice-select').value;
+      try {
+        const res = await fetch(API_BASE + 'admin/voices', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ voice: voice || null })
+        });
+        if (!res.ok) throw new Error('Save failed');
+        const data = await res.json();
+        document.getElementById('voice-info').textContent = `Current voice: ${data.voice}`;
+        const successEl = document.getElementById('success');
+        successEl.textContent = `Voice set to: ${data.voice}`;
+        successEl.style.display = 'block';
+        setTimeout(() => { successEl.style.display = 'none'; }, 3000);
+      } catch (err) {
+        const errorEl = document.getElementById('error');
+        errorEl.textContent = 'Failed to save voice: ' + err.message;
+        errorEl.style.display = 'block';
+        setTimeout(() => { errorEl.style.display = 'none'; }, 5000);
+      }
+    }
+
     loadStatus();
     loadKeys();
     loadWhisperStatus();
+    loadVoices();
   </script>
 </body>
 </html>
