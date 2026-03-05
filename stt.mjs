@@ -56,7 +56,7 @@ class LocalWhisperProvider {
         '-m', this.modelPath,
         '-f', tmpFile,
         '-nt',
-        '--output-format', 'txt',
+        '-otxt',
         '-t', String(this.threads),
         '-l', options.language || 'en'
       ];
