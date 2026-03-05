@@ -35,14 +35,50 @@ export async function installWhisper(targetDir, onProgress = () => {}) {
     await run('cmake', ['--build', 'build', '-j4'], { cwd: buildDir, timeout: 600000 });
     onProgress('Compilation complete.');
 
-    // Step 3: Copy binary
+    // Step 3: Copy binary and shared libraries
     const builtBinary = join(buildDir, 'build', 'bin', BINARY_NAME);
     if (!existsSync(builtBinary)) {
       throw new Error(`Build succeeded but ${BINARY_NAME} not found at ${builtBinary}`);
     }
-    onProgress('Copying binary...');
+    onProgress('Copying binary and libraries...');
     await run('cp', [builtBinary, binaryPath]);
     await run('chmod', ['+x', binaryPath]);
+
+    // Copy shared libraries that whisper-cli depends on
+    const libDir = join(buildDir, 'build', 'src');
+    const ggmlLibDir = join(buildDir, 'build', 'ggml', 'src');
+    for (const dir of [libDir, ggmlLibDir]) {
+      if (existsSync(dir)) {
+        try {
+          const { stdout } = await new Promise((resolve, reject) => {
+            execFile('find', [dir, '-name', '*.so*', '-type', 'f'], (err, stdout) => {
+              if (err) return reject(err);
+              resolve({ stdout });
+            });
+          });
+          for (const lib of stdout.trim().split('\n').filter(Boolean)) {
+            await run('cp', ['-P', lib, targetDir]);
+            onProgress(`  Copied ${lib.split('/').pop()}`);
+          }
+        } catch (_) {}
+      }
+    }
+    // Also search build/lib for shared libs
+    const buildLibDir = join(buildDir, 'build', 'lib');
+    if (existsSync(buildLibDir)) {
+      try {
+        const { stdout } = await new Promise((resolve, reject) => {
+          execFile('find', [buildLibDir, '-name', '*.so*', '-type', 'f'], (err, stdout) => {
+            if (err) return reject(err);
+            resolve({ stdout });
+          });
+        });
+        for (const lib of stdout.trim().split('\n').filter(Boolean)) {
+          await run('cp', ['-P', lib, targetDir]);
+          onProgress(`  Copied ${lib.split('/').pop()}`);
+        }
+      } catch (_) {}
+    }
 
     // Step 4: Download model
     onProgress('Downloading base.en model (~142MB)...');

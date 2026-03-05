@@ -61,8 +61,12 @@ class LocalWhisperProvider {
         '-l', options.language || 'en'
       ];
 
+      // Set LD_LIBRARY_PATH to the directory containing whisper-cli so it finds libwhisper.so
+      const binDir = this.binaryPath.substring(0, this.binaryPath.lastIndexOf('/'));
+      const env = { ...process.env, LD_LIBRARY_PATH: binDir + ':' + (process.env.LD_LIBRARY_PATH || '') };
+
       await new Promise((resolve, reject) => {
-        execFile(this.binaryPath, args, { timeout: 30000 }, (err, stdout, stderr) => {
+        execFile(this.binaryPath, args, { timeout: 30000, env }, (err, stdout, stderr) => {
           if (err) {
             console.error('[mimi-stt] whisper-cli stderr:', stderr);
             return reject(new Error(`whisper-cli failed: ${err.message}`));
