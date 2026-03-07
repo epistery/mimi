@@ -245,8 +245,35 @@ export default class MimiAgent {
           };
         }
 
-        default:
+        default: {
+          // Check agent tool registry for dynamically declared tools
+          const agentTool = this._findAgentTool(toolName);
+          if (agentTool) {
+            // Substitute {param} placeholders in path with arg values
+            let toolPath = agentTool.path.replace(/\{(\w+)\}/g, (_, key) =>
+              encodeURIComponent(args[key] || '')
+            );
+            const fullPath = `${agentTool.basePath}${toolPath}`;
+
+            if (agentTool.method === 'GET') {
+              // Remaining args (not consumed by path) become query params
+              const pathParams = new Set(agentTool.path.match(/\{(\w+)\}/g)?.map(p => p.slice(1, -1)) || []);
+              const queryArgs = Object.entries(args).filter(([k]) => !pathParams.has(k) && args[k] != null);
+              if (queryArgs.length) {
+                const qs = new URLSearchParams(queryArgs).toString();
+                toolPath = `${fullPath}?${qs}`;
+                return await api(toolPath);
+              }
+              return await api(fullPath);
+            } else {
+              return await api(fullPath, {
+                method: agentTool.method,
+                body: JSON.stringify(args)
+              });
+            }
+          }
           return { error: `Unknown tool: ${toolName}` };
+        }
       }
     } catch (e) {
       return { error: e.message };
@@ -254,10 +281,19 @@ export default class MimiAgent {
   }
 
   /**
+   * Look up a tool in the agent registry
+   */
+  _findAgentTool(toolName) {
+    const getAgentTools = this.config.getAgentTools;
+    if (typeof getAgentTools !== 'function') return null;
+    return getAgentTools().find(t => t.name === toolName) || null;
+  }
+
+  /**
    * Tool definitions for Claude (matches MCPTools.mjs TOOLS)
    */
   getTools() {
-    return [
+    const coreTools = [
       {
         name: 'wiki_read',
         description: 'Read a wiki page by title. Returns the page content in markdown.',
@@ -362,6 +398,20 @@ export default class MimiAgent {
         input_schema: { type: 'object', properties: {} }
       }
     ];
+
+    // Append dynamically registered agent tools
+    const getAgentTools = this.config.getAgentTools;
+    if (typeof getAgentTools === 'function') {
+      for (const tool of getAgentTools()) {
+        coreTools.push({
+          name: tool.name,
+          description: tool.description,
+          input_schema: tool.inputSchema || { type: 'object', properties: {} }
+        });
+      }
+    }
+
+    return coreTools;
   }
 
   /**
@@ -783,6 +833,7 @@ export default class MimiAgent {
 You can answer any question — weather, trivia, math, advice, anything.
 Use web_search for current information like weather, news, sports, or prices.
 You also have epistery tools for wiki pages, archives, messages, and identity.
+Additional tools may be available from installed agents — use them when relevant.
 
 Your spoken replies are read aloud via TTS. Be conversational, like talking to a friend.
 No bullet points, no markdown, no lists, no headers in your spoken replies — just plain sentences.
