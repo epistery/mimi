@@ -87,10 +87,21 @@ export default class MimiAgent {
   }
 
   /**
+   * Get configured TTS voice for a domain
+   */
+  getTTSVoice(domain) {
+    if (this._ttsVoice) return this._ttsVoice;
+    const cfg = new Config();
+    cfg.setPath(domain);
+    this._ttsVoice = cfg.data?.tts?.voice || null;
+    return this._ttsVoice;
+  }
+
+  /**
    * Generate TTS audio via espeak-ng, returns audio ID
    * Auto-cleanup after 5 minutes
    */
-  generateTTS(text) {
+  generateTTS(text, domain) {
     return new Promise((resolve, reject) => {
       const id = randomBytes(12).toString('hex');
       const dir = this.getAudioDir();
@@ -102,7 +113,12 @@ export default class MimiAgent {
         .replace(/\n+/g, '. ')
         .substring(0, 2000);
 
-      execFile('espeak-ng', ['-w', filePath, clean], (err) => {
+      const args = ['-w', filePath];
+      const voice = this.getTTSVoice(domain);
+      if (voice) args.push('-v', voice);
+      args.push(clean);
+
+      execFile('espeak-ng', args, (err) => {
         if (err) {
           console.error('[mimi] espeak-ng error:', err.message);
           return reject(err);
@@ -130,6 +146,69 @@ export default class MimiAgent {
       return { matched: true, command };
     }
     return { matched: false, command: '' };
+  }
+
+  /**
+   * Trim and condense conversation history to stay within token limits.
+   * Keeps the last 10 exchanges, strips web search content from older turns,
+   * and collapses assistant tool-use turns into just their final text.
+   */
+  trimHistory(convKey, history) {
+    // First pass: condense assistant messages that have web_search/server_content blocks
+    // These are huge (full page HTML) and useless once the answer is extracted
+    for (let i = 0; i < history.length - 2; i++) {
+      const msg = history[i];
+      if (msg.role !== 'assistant' || typeof msg.content === 'string') continue;
+      if (!Array.isArray(msg.content)) continue;
+
+      // Strip server_content and web_search_tool_result blocks, keep text and tool_use
+      const condensed = [];
+      for (const block of msg.content) {
+        if (block.type === 'text') {
+          condensed.push(block);
+        } else if (block.type === 'tool_use') {
+          // Keep tool_use but truncate large inputs
+          const input = block.input;
+          const inputStr = JSON.stringify(input);
+          if (inputStr.length > 500) {
+            condensed.push({ ...block, input: { summary: inputStr.substring(0, 200) + '...' } });
+          } else {
+            condensed.push(block);
+          }
+        }
+        // Drop server_content, web_search_tool_result, etc.
+      }
+      if (condensed.length > 0 && condensed.length < msg.content.length) {
+        history[i] = { role: 'assistant', content: condensed };
+      }
+    }
+
+    // Second pass: also condense user messages with tool_result blocks
+    for (let i = 0; i < history.length - 2; i++) {
+      const msg = history[i];
+      if (msg.role !== 'user' || typeof msg.content === 'string') continue;
+      if (!Array.isArray(msg.content)) continue;
+
+      const condensed = msg.content.map(block => {
+        if (block.type === 'tool_result' && typeof block.content === 'string' && block.content.length > 1000) {
+          return { ...block, content: block.content.substring(0, 500) + '... [truncated]' };
+        }
+        return block;
+      });
+      history[i] = { role: 'user', content: condensed };
+    }
+
+    // Third pass: keep max 20 messages
+    if (history.length > 20) {
+      const trimmed = history.slice(-20);
+      // Ensure first message is from user (API requirement)
+      while (trimmed.length > 0 && trimmed[0].role !== 'user') {
+        trimmed.shift();
+      }
+      history.length = 0;
+      history.push(...trimmed);
+      this.conversations.set(convKey, history);
+    }
   }
 
   /**
@@ -632,6 +711,93 @@ export default class MimiAgent {
       res.json({ success: true, message: 'Whisper uninstalled. Falling back to OpenAI API.' });
     });
 
+    // Admin: list available TTS voices
+    router.get('/admin/voices', async (req, res) => {
+      const permissions = await this.getPermissions(req);
+      if (!permissions.admin) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      try {
+        const voices = await new Promise((resolve, reject) => {
+          execFile('espeak-ng', ['--voices'], { timeout: 5000 }, (err, stdout) => {
+            if (err) return reject(err);
+            const lines = stdout.trim().split('\n');
+            // First line is header: Pty  Language  Age/Gender  VoiceName   File   Other Languages
+            const results = [];
+            for (let i = 1; i < lines.length; i++) {
+              const parts = lines[i].trim().split(/\s+/);
+              if (parts.length >= 4) {
+                results.push({
+                  priority: parts[0],
+                  language: parts[1],
+                  gender: parts[2],
+                  name: parts[3],
+                  file: parts[4] || ''
+                });
+              }
+            }
+            resolve(results);
+          });
+        });
+        const cfg = new Config();
+        cfg.setPath(req.hostname || 'localhost');
+        const current = cfg.data?.tts?.voice || null;
+        res.json({ voices, current });
+      } catch (err) {
+        console.error('[mimi] Voice list error:', err.message);
+        res.status(500).json({ error: 'Failed to list voices: ' + err.message });
+      }
+    });
+
+    // Admin: set TTS voice
+    router.post('/admin/voices', async (req, res) => {
+      const permissions = await this.getPermissions(req);
+      if (!permissions.admin) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      const { voice } = req.body;
+      const domain = req.hostname || 'localhost';
+      const cfg = new Config();
+      cfg.setPath(domain);
+      if (voice) {
+        if (!cfg.data.tts) cfg.data.tts = {};
+        cfg.data.tts.voice = voice;
+      } else {
+        delete cfg.data.tts?.voice;
+      }
+      cfg.save();
+      this._ttsVoice = null; // reset cache
+      res.json({ success: true, voice: voice || 'default' });
+    });
+
+    // Admin: preview a voice
+    router.post('/admin/voices/preview', async (req, res) => {
+      const permissions = await this.getPermissions(req);
+      if (!permissions.admin) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      const { voice } = req.body;
+      try {
+        const id = randomBytes(12).toString('hex');
+        const filePath = path.join(this.getAudioDir(), `${id}.wav`);
+        const args = ['-w', filePath];
+        if (voice) args.push('-v', voice);
+        args.push('Hello, I am Mimi. This is how I sound.');
+
+        await new Promise((resolve, reject) => {
+          execFile('espeak-ng', args, { timeout: 10000 }, (err) => {
+            if (err) return reject(err);
+            resolve();
+          });
+        });
+
+        setTimeout(() => { try { unlinkSync(filePath); } catch (_) {} }, 60000);
+        res.json({ audioUrl: `audio/${id}` });
+      } catch (err) {
+        res.status(500).json({ error: 'Preview failed: ' + err.message });
+      }
+    });
+
     // Main portal page
     router.get('/', async (req, res) => {
       const permissions = await this.getPermissions(req);
@@ -910,17 +1076,15 @@ User wallet address: ${userAddress}`;
       // Add to history
       history.push({ role: 'assistant', content: claudeMessage.content });
 
-      // Trim history to 20 messages
-      if (history.length > 20) {
-        this.conversations.set(convKey, history.slice(-20));
-      }
+      // Trim and condense history
+      this.trimHistory(convKey, history);
 
       // Generate TTS audio for voice requests
       let audioUrl = null;
       if (pendingState.isVoice) {
         try {
           pendingState.progress = 'Generating speech...';
-          const audioId = await this.generateTTS(assistantContent);
+          const audioId = await this.generateTTS(assistantContent, domain);
           audioUrl = `audio/${audioId}`;
         } catch (err) {
           console.error('[mimi] TTS generation failed:', err.message);
