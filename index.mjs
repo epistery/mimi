@@ -201,9 +201,21 @@ export default class MimiAgent {
     // Third pass: keep max 20 messages
     if (history.length > 20) {
       const trimmed = history.slice(-20);
-      // Ensure first message is from user (API requirement)
-      while (trimmed.length > 0 && trimmed[0].role !== 'user') {
-        trimmed.shift();
+      // Ensure first message is a plain user message (not a tool_result).
+      // A tool_result user message requires a preceding assistant tool_use
+      // message, so we must skip past orphaned tool_result/tool_use pairs.
+      while (trimmed.length > 0) {
+        const first = trimmed[0];
+        if (first.role !== 'user') {
+          trimmed.shift();
+          continue;
+        }
+        // Check if this user message contains tool_result blocks
+        if (Array.isArray(first.content) && first.content.some(b => b.type === 'tool_result')) {
+          trimmed.shift();
+          continue;
+        }
+        break;
       }
       history.length = 0;
       history.push(...trimmed);
