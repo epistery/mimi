@@ -271,7 +271,8 @@ export default class MimiAgent {
           return data.error ? { error: data.error } : data;
         }
         case 'wiki_write': {
-          const data = await api(`/agent/epistery/wiki/${encodeURIComponent(args.title)}`, {
+          const docId = args.id || args.title;
+          const data = await api(`/agent/epistery/wiki/${encodeURIComponent(docId)}`, {
             method: 'POST',
             body: JSON.stringify({ title: args.title, body: args.content })
           });
@@ -340,6 +341,11 @@ export default class MimiAgent {
           // Check agent tool registry for dynamically declared tools
           const agentTool = this._findAgentTool(toolName);
           if (agentTool) {
+            // Bridged tools route through PeerBridge WebSocket
+            if (agentTool.bridged && typeof this.config.callBridgedTool === 'function') {
+              return await this.config.callBridgedTool(agentTool.peerId, toolName, args);
+            }
+
             // Substitute {param} placeholders in path with arg values
             let toolPath = agentTool.path.replace(/\{(\w+)\}/g, (_, key) =>
               encodeURIComponent(args[key] || '')
@@ -387,23 +393,24 @@ export default class MimiAgent {
     const coreTools = [
       {
         name: 'wiki_read',
-        description: 'Read a wiki page by title. Returns the page content in markdown.',
+        description: 'Read a wiki page by its document ID. Returns the page content in markdown.',
         input_schema: {
           type: 'object',
-          properties: { page: { type: 'string', description: 'Page title (e.g., "Home")' } },
+          properties: { page: { type: 'string', description: 'Document ID - a WikiWord using only letters, numbers, and underscores (min 3 chars). Examples: "Home", "BedfordStreet", "FAQ_Page"' } },
           required: ['page']
         }
       },
       {
         name: 'wiki_write',
-        description: 'Create or update a wiki page. Content should be markdown.',
+        description: 'Create or update a wiki page. The id is a WikiWord document identifier (letters, numbers, underscores only, min 3 chars). The title is a human-readable display name. Content should be markdown.',
         input_schema: {
           type: 'object',
           properties: {
-            title: { type: 'string', description: 'Page title' },
+            id: { type: 'string', description: 'Document ID - a WikiWord using only letters, numbers, and underscores (min 3 chars). Examples: "BedfordStreetHistory", "AboutUs", "FAQ_Page"' },
+            title: { type: 'string', description: 'Human-readable page title (e.g., "73 Bedford Street History")' },
             content: { type: 'string', description: 'Page content (markdown)' }
           },
-          required: ['title', 'content']
+          required: ['id', 'title', 'content']
         }
       },
       {
