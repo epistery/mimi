@@ -857,22 +857,9 @@ export default class MimiAgent {
       }
     });
 
-    // Main portal page
-    router.get('/', async (req, res) => {
-      const permissions = await this.getPermissions(req);
-      if (!permissions.read) {
-        if (req.accepts('html')) {
-          return res.status(403).send(`
-            <!DOCTYPE html>
-            <html><head><title>Access Denied</title></head>
-            <body style="font-family: sans-serif; max-width: 600px; margin: 100px auto; text-align: center;">
-              <h1>Access Denied</h1>
-              <p>You don't have access to Mimi voice portal.</p>
-            </body></html>
-          `);
-        }
-        return res.status(403).json({ error: 'Permission required' });
-      }
+    // Main portal page — always serve the SPA so common.js can establish
+    // the epistery session; data is still gated by permissions on API endpoints.
+    router.get('/', (req, res) => {
       res.sendFile(path.join(__dirname, 'client/portal.html'));
     });
 
