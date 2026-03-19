@@ -20,6 +20,36 @@ const __dirname = path.dirname(__filename);
  * sends it to Claude with access to epistery MCP tools, and speaks the
  * response back.
  */
+
+// Agent ACL check cache: `${address}:${agentName}` → { result, ts }
+const _aclCache = new Map();
+const ACL_CACHE_TTL = 3 * 60 * 1000;  // 3 minutes
+
+/**
+ * Extract agent name from route path.
+ * /agent/rootz/simplifi-agent/accounts → @rootz/simplifi-agent
+ */
+function agentNameFromPath(path) {
+  const m = path.match(/^\/agent\/([^/]+\/[^/]+)/);
+  return m ? `@${m[1]}` : null;
+}
+
+/**
+ * Check agent ACL for the authenticated client, with caching.
+ */
+async function checkAgentAcl(reqCtx, agentName) {
+  const address = reqCtx.episteryClient?.address;
+  if (!reqCtx.domainAcl || !address) return { allowed: false, level: 0 };
+
+  const cacheKey = `${address}:${agentName}`;
+  const cached = _aclCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < ACL_CACHE_TTL) return cached.result;
+
+  const result = await reqCtx.domainAcl.checkAgentAccess(agentName, address, reqCtx.hostname);
+  _aclCache.set(cacheKey, { result, ts: Date.now() });
+  return result;
+}
+
 export default class MimiAgent {
   constructor(config = {}) {
     this.config = config;
@@ -234,6 +264,7 @@ export default class MimiAgent {
       authorization: req.headers?.authorization || null,
       cookie: req.headers?.cookie || null,
       episteryClient: req.episteryClient,
+      domainAcl: req.domainAcl,
       hostname: req.hostname,
       port: this.getInternalPort(req)
     };
@@ -253,6 +284,15 @@ export default class MimiAgent {
     const baseUrl = `http://127.0.0.1:${port}`;
 
     const api = async (urlPath, opts = {}) => {
+      // Enforce agent ACL using the already-authenticated clientAddress
+      const agentName = agentNameFromPath(urlPath);
+      if (agentName) {
+        const access = await checkAgentAcl(reqCtx, agentName);
+        if (!access.allowed) {
+          return { error: `Access denied: you do not have access to ${agentName}` };
+        }
+      }
+
       const url = `${baseUrl}${urlPath}`;
       try {
         const res = await fetch(url, { ...opts, headers: { ...headers, ...opts.headers } });
