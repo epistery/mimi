@@ -25,7 +25,6 @@ class WhisperAPIProvider {
         language: options.language || 'en',
         response_format: 'text'
       });
-      console.log('[mimi-stt] OpenAI Whisper API transcription');
       return result.trim();
     } catch (err) {
       console.error('[mimi-stt] Whisper API error:', err.status, err.message, err.code);
@@ -81,7 +80,6 @@ class LocalWhisperProvider {
       }
 
       const text = await readFile(outputFile, 'utf-8');
-      console.log('[mimi-stt] Local whisper transcription');
       return text.trim();
     } finally {
       // Cleanup temp files

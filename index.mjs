@@ -916,12 +916,9 @@ export default class MimiAgent {
           return res.json({ status: 'ignored', reason: 'empty' });
         }
 
-        console.log(`[mimi] Transcribed: "${text}"`);
-
         // In attentive mode (post-response window), skip wake word check
         let message;
         if (attentive) {
-          console.log(`[mimi] Attentive mode, skipping wake word check`);
           // Still strip wake word if present, but don't require it
           const wake = this.checkWakeWord(text);
           message = wake.matched ? (wake.command || text) : text;
@@ -932,7 +929,6 @@ export default class MimiAgent {
           }
           message = wake.command || text;
         }
-        console.log(`[mimi] Wake word matched, command: "${message}"`);
 
         // Get or initialize conversation
         const convKey = sessionId || `mimi-${req.episteryClient?.address || 'anon'}-${Date.now()}`;
@@ -1023,8 +1019,6 @@ export default class MimiAgent {
 
         // Capture request context before async processing
         const reqCtx = this.captureRequestContext(req);
-        console.log(`[mimi] User address: ${reqCtx.episteryClient?.address || 'none'}, cookie present: ${!!reqCtx.cookie}`);
-
         // Start async processing
         this.processMessage(reqCtx, history, convKey, pendingState, token);
 
@@ -1093,10 +1087,8 @@ User wallet address: ${userAddress}`;
         // web_search is handled server-side by Anthropic — no proxy needed
         if (toolUse && toolUse.name !== 'web_search') {
           pendingState.progress = `Using ${toolUse.name} (${toolCallCount})...`;
-          console.log(`[mimi] Tool: ${toolUse.name}`, toolUse.input);
 
           const toolResult = await this.proxyToolCall(toolUse.name, toolUse.input, reqCtx);
-          console.log(`[mimi] Tool result:`, JSON.stringify(toolResult).substring(0, 200));
 
           // Add assistant's tool use to history
           history.push({ role: 'assistant', content: claudeMessage.content });
@@ -1113,7 +1105,6 @@ User wallet address: ${userAddress}`;
         } else {
           // Server tool (web_search) — results are already in the response content
           pendingState.progress = `Searching the web (${toolCallCount})...`;
-          console.log(`[mimi] Server tool: web_search`);
           history.push({ role: 'assistant', content: claudeMessage.content });
         }
 
