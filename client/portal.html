@@ -273,7 +273,11 @@
         const orbLabel = document.getElementById('orbLabel');
 
         let sessionId = null;
-        let isMuted = false;
+        // Default mic off; restore from cookie if set
+        let isMuted = (function() {
+            const m = document.cookie.match(/(?:^|;\s*)mimi_mic=(\w+)/);
+            return m ? m[1] !== 'on' : true; // default off
+        })();
         let vadInstance = null;
         let currentAudio = null; // <audio> element for TTS playback
         let synthesis = window.speechSynthesis;
@@ -604,12 +608,20 @@
         }
 
         // ---- Mute toggle ----
-        muteBtn.addEventListener('click', function() {
-            isMuted = !isMuted;
+        function applyMuteUI() {
             muteBtn.classList.toggle('muted', isMuted);
             muteBtn.title = isMuted ? 'Unmute microphone' : 'Mute microphone';
             document.getElementById('muteWave1').style.display = isMuted ? 'none' : '';
             document.getElementById('muteWave2').style.display = isMuted ? 'none' : '';
+        }
+        // Apply initial mute state to button
+        applyMuteUI();
+
+        muteBtn.addEventListener('click', function() {
+            isMuted = !isMuted;
+            // Save preference as cookie (30 days)
+            document.cookie = 'mimi_mic=' + (isMuted ? 'off' : 'on') + ';path=/;max-age=' + (30*86400);
+            applyMuteUI();
 
             if (vadInstance) {
                 if (isMuted) {
@@ -664,9 +676,15 @@
                     }
                 });
 
-                vadInstance.start();
-                setState('idle');
-                addMessage('system', 'Listening for "Mimi" wake word. Say "Mimi" followed by your request.');
+                if (isMuted) {
+                    // Don't start mic — user prefers typing
+                    setState('muted');
+                    statusText.textContent = 'Type a message or unmute to talk';
+                } else {
+                    vadInstance.start();
+                    setState('idle');
+                    addMessage('system', 'Listening for "Mimi" wake word. Say "Mimi" followed by your request.');
+                }
             } catch (err) {
                 console.error('[Mimi] VAD init error:', err);
                 addMessage('error', 'Microphone access failed: ' + err.message);
