@@ -193,9 +193,22 @@ export default class MimiAgent {
 
       // Strip server_content and web_search_tool_result blocks, keep text and tool_use
       const condensed = [];
+      let hadSearchContent = false;
+      // First pass: detect if this message has server_content or web_search blocks
+      for (const block of msg.content) {
+        if (block.type === 'server_content' || block.type === 'web_search_tool_result') {
+          hadSearchContent = true;
+          break;
+        }
+      }
       for (const block of msg.content) {
         if (block.type === 'text') {
-          condensed.push(block);
+          // Strip citations when we're dropping the search results they reference
+          if (hadSearchContent && block.citations) {
+            condensed.push({ type: 'text', text: block.text });
+          } else {
+            condensed.push(block);
+          }
         } else if (block.type === 'tool_use') {
           // Keep tool_use but truncate large inputs
           const input = block.input;
