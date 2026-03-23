@@ -566,6 +566,41 @@ export default class MimiAgent {
   }
 
   /**
+   * Get tools with dynamic descriptions from agents that support describeTools().
+   * Falls back to static descriptions for agents that don't.
+   */
+  async getToolsForDomain(domain) {
+    const tools = this.getTools();
+    const getAgentTools = this.config.getAgentTools;
+    if (typeof getAgentTools !== 'function') return tools;
+
+    // Find agent tools in the list and try to enrich with dynamic descriptions
+    const agentManager = this.config._agentManager;
+    if (!agentManager) return tools;
+
+    for (const [, agentData] of agentManager.agents) {
+      if (typeof agentData.instance?.describeTools !== 'function') continue;
+
+      try {
+        const dynamicTools = await agentData.instance.describeTools(domain);
+        if (!Array.isArray(dynamicTools)) continue;
+
+        for (const dt of dynamicTools) {
+          const existing = tools.find(t => t.name === dt.name);
+          if (existing) {
+            existing.description = dt.description;
+            if (dt.inputSchema) existing.input_schema = dt.inputSchema;
+          }
+        }
+      } catch (e) {
+        console.error(`[mimi] describeTools() failed for ${agentData.manifest.name}:`, e.message);
+      }
+    }
+
+    return tools;
+  }
+
+  /**
    * Call Claude with retry on rate limits (same as pro-research)
    */
   async callClaudeWithRetry(client, params, maxRetries = 3) {
@@ -677,6 +712,35 @@ export default class MimiAgent {
         this.anthropic = null;
       }
 
+      cfg.save();
+      res.json({ success: true });
+    });
+
+    // Admin: get AI notes
+    router.get('/admin/notes', async (req, res) => {
+      const permissions = await this.getPermissions(req);
+      if (!permissions.admin) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      const cfg = new Config();
+      cfg.setPath(req.hostname || 'localhost');
+      res.json({ notes: cfg.data?.ai_notes || '' });
+    });
+
+    // Admin: save AI notes
+    router.post('/admin/notes', async (req, res) => {
+      const permissions = await this.getPermissions(req);
+      if (!permissions.admin) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      const { notes } = req.body;
+      if (typeof notes !== 'string') {
+        return res.status(400).json({ error: 'notes must be a string' });
+      }
+      const domain = req.hostname || 'localhost';
+      const cfg = new Config();
+      cfg.setPath(domain);
+      cfg.data.ai_notes = notes;
       cfg.save();
       res.json({ success: true });
     });
@@ -1043,12 +1107,20 @@ export default class MimiAgent {
   async processMessage(reqCtx, history, convKey, pendingState, token) {
     try {
       const client = this.getAnthropicClient(reqCtx.hostname);
-      const tools = this.getTools();
+      const tools = await this.getToolsForDomain(reqCtx.hostname || 'localhost');
 
       const domain = reqCtx.hostname || 'localhost';
       const userAddress = reqCtx.episteryClient?.address || 'unknown';
 
-      const systemPrompt = `You are Mimi, a general-purpose voice assistant on the epistery host at ${domain}.
+      // Load domain AI notes (admin-configured context for AI assistants)
+      let aiNotes = '';
+      try {
+        const cfg = new Config();
+        cfg.setPath(domain);
+        aiNotes = cfg.data?.ai_notes || '';
+      } catch (e) { /* ignore */ }
+
+      let systemPrompt = `You are Mimi, a general-purpose voice assistant on the epistery host at ${domain}.
 You can answer any question — weather, trivia, math, advice, anything.
 Use web_search for current information like weather, news, sports, or prices.
 You also have epistery tools for wiki pages, archives, messages, and identity.
@@ -1062,6 +1134,10 @@ not trail off. A complete short answer is better than a long one that stops mid-
 However, when writing content to the wiki or message board via tools, write naturally with
 full markdown, proper formatting, and as much detail as appropriate for that medium.
 User wallet address: ${userAddress}`;
+
+      if (aiNotes) {
+        systemPrompt += `\n\nDomain notes from admin:\n${aiNotes}`;
+      }
 
       // Add built-in web search alongside epistery tools
       const allTools = [

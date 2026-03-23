@@ -90,7 +90,7 @@
   <header data-widget="header"></header>
   <main class="console-layout no-sidebar">
     <div class="console-main" style="padding-bottom:400px"> <!-- padding for devices with popup keyboards -->
-      <div class="console-header">
+      <div class="console-header" style="padding-left: 52px;">
         <h1>Mimi Admin</h1>
       </div>
 
@@ -133,6 +133,19 @@
         </div>
         <div style="font-size:0.8em; color:var(--text-color-quiet); margin-top:0.5em;">
           Stored in domain config. Fallback for speech-to-text when local whisper is not installed.
+        </div>
+      </div>
+
+      <div class="console-panel">
+        <h2>AI Notes</h2>
+        <div style="font-size:0.8em; color:var(--text-color-quiet); margin-bottom:var(--spacer);">
+          Domain-level context shared with all AI assistants (Mimi, Claude Code via MCP, etc.).
+          Use this to provide information that helps AI understand your domain — names, preferences,
+          relationships, or anything the AI should know without being asked.
+        </div>
+        <textarea id="ai-notes" rows="6" style="width:100%; padding:0.5em; border:1px solid var(--page-border); border-radius:4px; font-family:inherit; font-size:0.9em; background:var(--bg-color); color:var(--text-color); resize:vertical;" placeholder="e.g. Michael's zodiac sign is Libra. Diana is a Scorpio. The family lives in New York."></textarea>
+        <div style="margin-top:0.5em; display:flex; justify-content:flex-end;">
+          <button class="btn btn-primary" onclick="saveNotes()">Save</button>
         </div>
       </div>
 
@@ -420,8 +433,44 @@
       }
     }
 
+    async function loadNotes() {
+      try {
+        const res = await fetch(API_BASE + 'admin/notes');
+        if (!res.ok) return;
+        const data = await res.json();
+        document.getElementById('ai-notes').value = data.notes || '';
+      } catch (err) {
+        console.error('[mimi-admin] Notes load error:', err);
+      }
+    }
+
+    async function saveNotes() {
+      const notes = document.getElementById('ai-notes').value;
+      try {
+        const res = await fetch(API_BASE + 'admin/notes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ notes })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `HTTP ${res.status}`);
+        }
+        const successEl = document.getElementById('success');
+        successEl.textContent = 'AI notes saved.';
+        successEl.style.display = 'block';
+        setTimeout(() => { successEl.style.display = 'none'; }, 3000);
+      } catch (err) {
+        const errorEl = document.getElementById('error');
+        errorEl.textContent = 'Failed to save notes: ' + err.message;
+        errorEl.style.display = 'block';
+        setTimeout(() => { errorEl.style.display = 'none'; }, 5000);
+      }
+    }
+
     loadStatus();
     loadKeys();
+    loadNotes();
     loadWhisperStatus();
     loadVoices();
   </script>
