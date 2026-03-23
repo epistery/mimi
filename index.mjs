@@ -182,77 +182,76 @@ export default class MimiAgent {
    * Keeps the last 10 exchanges, strips web search content from older turns,
    * and collapses assistant tool-use turns into just their final text.
    */
+  /**
+   * Strip citations and server_content from a content block array.
+   * Citations reference search results by index — once the search results
+   * (server_content / web_search_tool_result) are gone, orphaned citations
+   * cause 400 errors from the API. Strip them from ALL messages, not just
+   * the ones that contained the search.
+   */
+  _cleanContentBlocks(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return content;
+
+    const cleaned = [];
+    for (const block of content) {
+      // Drop search result payloads entirely (massive HTML)
+      if (block.type === 'server_content' || block.type === 'web_search_tool_result') continue;
+
+      if (block.type === 'text') {
+        // Always strip citations — they're rendering metadata, not context
+        if (block.citations) {
+          cleaned.push({ type: 'text', text: block.text });
+        } else {
+          cleaned.push(block);
+        }
+      } else if (block.type === 'tool_use') {
+        // Keep tool_use but truncate large inputs
+        const inputStr = JSON.stringify(block.input);
+        if (inputStr.length > 500) {
+          cleaned.push({ ...block, input: { summary: inputStr.substring(0, 200) + '...' } });
+        } else {
+          cleaned.push(block);
+        }
+      } else if (block.type === 'tool_result') {
+        // Truncate large tool results
+        if (typeof block.content === 'string' && block.content.length > 1000) {
+          cleaned.push({ ...block, content: block.content.substring(0, 500) + '... [truncated]' });
+        } else {
+          cleaned.push(block);
+        }
+      } else {
+        cleaned.push(block);
+      }
+    }
+    return cleaned;
+  }
+
   trimHistory(convKey, history) {
-    // First pass: condense assistant messages that have web_search/server_content blocks
-    // These are huge (full page HTML) and useless once the answer is extracted
-    for (let i = 0; i < history.length - 2; i++) {
+    // Clean every message: strip citations, server_content, truncate large blocks
+    for (let i = 0; i < history.length; i++) {
       const msg = history[i];
-      if (msg.role !== 'assistant' || typeof msg.content === 'string') continue;
-      if (!Array.isArray(msg.content)) continue;
-
-      // Strip server_content and web_search_tool_result blocks, keep text and tool_use
-      const condensed = [];
-      let hadSearchContent = false;
-      // First pass: detect if this message has server_content or web_search blocks
-      for (const block of msg.content) {
-        if (block.type === 'server_content' || block.type === 'web_search_tool_result') {
-          hadSearchContent = true;
-          break;
-        }
-      }
-      for (const block of msg.content) {
-        if (block.type === 'text') {
-          // Strip citations when we're dropping the search results they reference
-          if (hadSearchContent && block.citations) {
-            condensed.push({ type: 'text', text: block.text });
-          } else {
-            condensed.push(block);
-          }
-        } else if (block.type === 'tool_use') {
-          // Keep tool_use but truncate large inputs
-          const input = block.input;
-          const inputStr = JSON.stringify(input);
-          if (inputStr.length > 500) {
-            condensed.push({ ...block, input: { summary: inputStr.substring(0, 200) + '...' } });
-          } else {
-            condensed.push(block);
-          }
-        }
-        // Drop server_content, web_search_tool_result, etc.
-      }
-      if (condensed.length > 0 && condensed.length < msg.content.length) {
-        history[i] = { role: 'assistant', content: condensed };
+      if (typeof msg.content === 'string') continue;
+      const cleaned = this._cleanContentBlocks(msg.content);
+      // If cleaning removed all blocks (e.g. a message was only server_content),
+      // replace with a placeholder so the message isn't empty
+      if (Array.isArray(cleaned) && cleaned.length === 0) {
+        history[i] = { role: msg.role, content: [{ type: 'text', text: '(search results)' }] };
+      } else {
+        history[i] = { role: msg.role, content: cleaned };
       }
     }
 
-    // Second pass: also condense user messages with tool_result blocks
-    for (let i = 0; i < history.length - 2; i++) {
-      const msg = history[i];
-      if (msg.role !== 'user' || typeof msg.content === 'string') continue;
-      if (!Array.isArray(msg.content)) continue;
-
-      const condensed = msg.content.map(block => {
-        if (block.type === 'tool_result' && typeof block.content === 'string' && block.content.length > 1000) {
-          return { ...block, content: block.content.substring(0, 500) + '... [truncated]' };
-        }
-        return block;
-      });
-      history[i] = { role: 'user', content: condensed };
-    }
-
-    // Third pass: keep max 20 messages
+    // Keep max 20 messages
     if (history.length > 20) {
       const trimmed = history.slice(-20);
       // Ensure first message is a plain user message (not a tool_result).
-      // A tool_result user message requires a preceding assistant tool_use
-      // message, so we must skip past orphaned tool_result/tool_use pairs.
       while (trimmed.length > 0) {
         const first = trimmed[0];
         if (first.role !== 'user') {
           trimmed.shift();
           continue;
         }
-        // Check if this user message contains tool_result blocks
         if (Array.isArray(first.content) && first.content.some(b => b.type === 'tool_result')) {
           trimmed.shift();
           continue;
@@ -1127,8 +1126,43 @@ User wallet address: ${userAddress}`;
       let toolCallCount = 0;
       let continueLoop = true;
 
+      // Helper: create a streaming Claude call with rate limit retry
+      const streamWithRetry = async (params, maxRetries = 3) => {
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+          try {
+            const stream = client.messages.stream(params);
+            stream.on('text', (text) => {
+              send('text', { text });
+              fullText += text;
+            });
+            return await stream.finalMessage();
+          } catch (error) {
+            if (error.status === 429 && attempt < maxRetries - 1) {
+              const retryAfter = error.headers?.['retry-after']
+                ? parseInt(error.headers['retry-after']) * 1000
+                : 5000 * (attempt + 1);
+              console.log(`[mimi] Rate limit (attempt ${attempt + 1}/${maxRetries}), waiting ${Math.ceil(retryAfter / 1000)}s...`);
+              send('tool', { name: 'waiting', count: 0 });
+              // Also trim history to reduce token count for next attempt
+              this.trimHistory(convKey, history);
+              await new Promise(resolve => setTimeout(resolve, retryAfter + 1000));
+              continue;
+            }
+            if (error.status === 400 && attempt < maxRetries - 1) {
+              // Bad request — likely orphaned citations or malformed history.
+              // Aggressively clean and retry.
+              console.error(`[mimi] 400 error, cleaning history and retrying:`, error.message);
+              this.trimHistory(convKey, history);
+              continue;
+            }
+            throw error;
+          }
+        }
+        throw new Error('Maximum retry attempts exceeded');
+      };
+
       while (continueLoop) {
-        const stream = client.messages.stream({
+        const message = await streamWithRetry({
           model: 'claude-sonnet-4-20250514',
           max_tokens: 4096,
           system: systemPrompt,
@@ -1136,17 +1170,9 @@ User wallet address: ${userAddress}`;
           messages: history
         });
 
-        // Stream text chunks to client as they arrive
-        stream.on('text', (text) => {
-          send('text', { text });
-          fullText += text;
-        });
-
-        const message = await stream.finalMessage();
-
         if (message.stop_reason === 'tool_use') {
-          // Add assistant message to history
-          history.push({ role: 'assistant', content: message.content });
+          // Add assistant message to history (clean immediately)
+          history.push({ role: 'assistant', content: this._cleanContentBlocks(message.content) });
 
           // Handle ALL tool_use blocks (not just the first)
           const toolUses = message.content.filter(b => b.type === 'tool_use');
@@ -1166,19 +1192,18 @@ User wallet address: ${userAddress}`;
             }
             history.push({ role: 'user', content: toolResults });
           }
-          // For web_search-only turns, results are already in the assistant content.
-          // Claude needs a user message to continue — send an empty acknowledgment.
+          // For web_search-only turns, results are already in the assistant content
           if (regularTools.length === 0) {
             send('tool', { name: 'web_search', count: ++toolCallCount });
           }
         } else {
           // end_turn or max_tokens — we're done
-          history.push({ role: 'assistant', content: message.content });
+          history.push({ role: 'assistant', content: this._cleanContentBlocks(message.content) });
           continueLoop = false;
         }
       }
 
-      // Trim and condense history
+      // Final trim
       this.trimHistory(convKey, history);
 
       // Generate TTS audio for voice requests
