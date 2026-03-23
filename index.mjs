@@ -54,7 +54,6 @@ export default class MimiAgent {
   constructor(config = {}) {
     this.config = config;
     this.conversations = new Map();   // sessionId -> message history
-    this.pendingRequests = new Map();  // continuationToken -> pending state
     this.anthropic = null;
     this.sttProvider = null;
     this.internalPort = null;
@@ -268,8 +267,7 @@ export default class MimiAgent {
 
   /**
    * Snapshot the request headers we need for internal proxying.
-   * Must be called synchronously during the request handler,
-   * before the async processMessage runs after res.json().
+   * Must be called synchronously during the request handler.
    */
   captureRequestContext(req) {
     return {
@@ -659,8 +657,7 @@ export default class MimiAgent {
       res.json({
         agent: 'mimi',
         version: '0.1.0',
-        activeSessions: this.conversations.size,
-        pendingRequests: this.pendingRequests.size
+        activeSessions: this.conversations.size
       });
     });
 
@@ -950,7 +947,8 @@ export default class MimiAgent {
       res.sendFile(filePath);
     });
 
-    // Voice audio endpoint — receive WAV, transcribe, check wake word
+    // Voice audio endpoint — transcribe + wake word check only.
+    // Returns the transcribed text; client streams response via /message.
     router.post('/audio', async (req, res) => {
       try {
         const permissions = await this.getPermissions(req);
@@ -958,7 +956,7 @@ export default class MimiAgent {
           return res.status(403).json({ error: 'Permission required' });
         }
 
-        const { audio, sessionId, attentive } = req.body;
+        const { audio, attentive } = req.body;
         if (!audio) {
           return res.status(400).json({ status: 'error', message: 'No audio data' });
         }
@@ -983,7 +981,6 @@ export default class MimiAgent {
         // In attentive mode (post-response window), skip wake word check
         let message;
         if (attentive) {
-          // Still strip wake word if present, but don't require it
           const wake = this.checkWakeWord(text);
           message = wake.matched ? (wake.command || text) : text;
         } else {
@@ -994,43 +991,14 @@ export default class MimiAgent {
           message = wake.command || text;
         }
 
-        // Get or initialize conversation
-        const convKey = sessionId || `mimi-${req.episteryClient?.address || 'anon'}-${Date.now()}`;
-        if (!this.conversations.has(convKey)) {
-          this.conversations.set(convKey, []);
-        }
-        const history = this.conversations.get(convKey);
-        history.push({ role: 'user', content: message });
-
-        // Generate continuation token
-        const token = `${convKey}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        const pendingState = {
-          sessionId: convKey,
-          completed: false,
-          progress: 'Starting...',
-          response: null,
-          error: null,
-          isVoice: true
-        };
-        this.pendingRequests.set(token, pendingState);
-
-        const reqCtx = this.captureRequestContext(req);
-        this.processMessage(reqCtx, history, convKey, pendingState, token);
-
-        res.json({
-          status: 'working',
-          continuationToken: token,
-          sessionId: convKey,
-          text: message,
-          progress: pendingState.progress
-        });
+        res.json({ status: 'matched', text: message });
       } catch (error) {
         console.error('[mimi] Audio endpoint error:', error);
         res.status(500).json({ status: 'error', message: error.message });
       }
     });
 
-    // Message endpoint - Claude relay with continuation tokens
+    // Message endpoint — SSE streaming response
     router.post('/message', async (req, res) => {
       try {
         const permissions = await this.getPermissions(req);
@@ -1038,23 +1006,7 @@ export default class MimiAgent {
           return res.status(403).json({ error: 'Permission required' });
         }
 
-        const { message, sessionId, continuationToken } = req.body;
-
-        // Handle continuation polling
-        if (continuationToken) {
-          const pending = this.pendingRequests.get(continuationToken);
-          if (!pending) {
-            return res.status(404).json({ status: 'error', message: 'Token not found or expired' });
-          }
-          if (pending.completed) {
-            this.pendingRequests.delete(continuationToken);
-            if (pending.error) {
-              return res.json({ status: 'error', message: pending.error, sessionId: pending.sessionId });
-            }
-            return res.json({ status: 'success', response: pending.response, sessionId: pending.sessionId, completed: true });
-          }
-          return res.json({ status: 'working', continuationToken, progress: pending.progress || 'Processing...' });
-        }
+        const { message, sessionId, voice } = req.body;
 
         if (!message) {
           return res.status(400).json({ status: 'error', message: 'Message is required' });
@@ -1070,57 +1022,56 @@ export default class MimiAgent {
         // Add user message
         history.push({ role: 'user', content: message });
 
-        // Generate continuation token
-        const token = `${convKey}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        const pendingState = {
-          sessionId: convKey,
-          completed: false,
-          progress: 'Starting...',
-          response: null,
-          error: null
-        };
-        this.pendingRequests.set(token, pendingState);
-
-        // Capture request context before async processing
-        const reqCtx = this.captureRequestContext(req);
-        // Start async processing
-        this.processMessage(reqCtx, history, convKey, pendingState, token);
-
-        // Return immediately with token
-        res.json({
-          status: 'working',
-          continuationToken: token,
-          sessionId: convKey,
-          progress: pendingState.progress
+        // Switch to SSE streaming
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'X-Session-Id': convKey
         });
+
+        // Send session ID as first event
+        this.sendSSE(res, 'session', { sessionId: convKey });
+
+        // Stream the response
+        const reqCtx = this.captureRequestContext(req);
+        await this.processMessageStream(reqCtx, history, convKey, res, !!voice);
+
+        res.end();
       } catch (error) {
         console.error('[mimi] Message error:', error);
-        res.status(500).json({ status: 'error', message: error.message });
+        // If headers already sent, send error as SSE
+        if (res.headersSent) {
+          this.sendSSE(res, 'error', { message: error.message });
+          res.end();
+        } else {
+          res.status(500).json({ status: 'error', message: error.message });
+        }
       }
     });
   }
 
   /**
-   * Process a message asynchronously (tool-calling loop)
-   * Same pattern as pro-research lines 394-482
+   * Send an SSE event to the client
    */
-  async processMessage(reqCtx, history, convKey, pendingState, token) {
+  sendSSE(res, event, data) {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  }
+
+  /**
+   * Build the system prompt for Claude
+   */
+  buildSystemPrompt(domain, userAddress, isVoice) {
+    let aiNotes = '';
     try {
-      const client = this.getAnthropicClient(reqCtx.hostname);
-      const tools = await this.getToolsForDomain(reqCtx.hostname || 'localhost');
+      const cfg = new Config();
+      cfg.setPath(domain);
+      aiNotes = cfg.data?.ai_notes || '';
+    } catch (e) { /* ignore */ }
 
-      const domain = reqCtx.hostname || 'localhost';
-      const userAddress = reqCtx.episteryClient?.address || 'unknown';
-
-      // Load domain AI notes (admin-configured context for AI assistants)
-      let aiNotes = '';
-      try {
-        const cfg = new Config();
-        cfg.setPath(domain);
-        aiNotes = cfg.data?.ai_notes || '';
-      } catch (e) { /* ignore */ }
-
-      let systemPrompt = `You are Mimi, a general-purpose voice assistant on the epistery host at ${domain}.
+    let systemPrompt;
+    if (isVoice) {
+      systemPrompt = `You are Mimi, a general-purpose voice assistant on the epistery host at ${domain}.
 You can answer any question — weather, trivia, math, advice, anything.
 Use web_search for current information like weather, news, sports, or prices.
 You also have epistery tools for wiki pages, archives, messages, and identity.
@@ -1134,104 +1085,116 @@ not trail off. A complete short answer is better than a long one that stops mid-
 However, when writing content to the wiki or message board via tools, write naturally with
 full markdown, proper formatting, and as much detail as appropriate for that medium.
 User wallet address: ${userAddress}`;
+    } else {
+      systemPrompt = `You are Mimi, a helpful assistant on the epistery host at ${domain}.
+You can answer any question — weather, trivia, math, advice, anything.
+Use web_search for current information like weather, news, sports, or prices.
+You also have epistery tools for wiki pages, archives, messages, and identity.
+Additional tools may be available from installed agents — use them when relevant.
 
-      if (aiNotes) {
-        systemPrompt += `\n\nDomain notes from admin:\n${aiNotes}`;
-      }
+Respond naturally. Use markdown formatting when it helps clarity.
+Keep responses focused and complete — always finish your thought with the actual answer.
+User wallet address: ${userAddress}`;
+    }
 
-      // Add built-in web search alongside epistery tools
+    if (aiNotes) {
+      systemPrompt += `\n\nDomain notes from admin:\n${aiNotes}`;
+    }
+    return systemPrompt;
+  }
+
+  /**
+   * Stream a message response via SSE (replaces polling architecture).
+   * Uses Anthropic streaming API — text appears as Claude generates it.
+   * Tool-calling loop handles ALL tool_use blocks per turn.
+   */
+  async processMessageStream(reqCtx, history, convKey, res, isVoice) {
+    const send = (event, data) => this.sendSSE(res, event, data);
+
+    try {
+      const client = this.getAnthropicClient(reqCtx.hostname);
+      const tools = await this.getToolsForDomain(reqCtx.hostname || 'localhost');
+      const domain = reqCtx.hostname || 'localhost';
+      const userAddress = reqCtx.episteryClient?.address || 'unknown';
+      const systemPrompt = this.buildSystemPrompt(domain, userAddress, isVoice);
+
       const allTools = [
         { type: 'web_search_20250305', name: 'web_search', max_uses: 3 },
         ...tools
       ];
 
-      pendingState.progress = 'Sending to Claude...';
-      let claudeMessage = await this.callClaudeWithRetry(client, {
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 4096,
-        system: systemPrompt,
-        tools: allTools,
-        messages: history
-      });
-
-      // Tool-calling loop
+      let fullText = '';
       let toolCallCount = 0;
-      while (claudeMessage.stop_reason === 'tool_use') {
-        toolCallCount++;
-        const toolUse = claudeMessage.content.find(block => block.type === 'tool_use');
+      let continueLoop = true;
 
-        // web_search is handled server-side by Anthropic — no proxy needed
-        if (toolUse && toolUse.name !== 'web_search') {
-          pendingState.progress = `Using ${toolUse.name} (${toolCallCount})...`;
-
-          const toolResult = await this.proxyToolCall(toolUse.name, toolUse.input, reqCtx);
-
-          // Add assistant's tool use to history
-          history.push({ role: 'assistant', content: claudeMessage.content });
-
-          // Add tool result
-          history.push({
-            role: 'user',
-            content: [{
-              type: 'tool_result',
-              tool_use_id: toolUse.id,
-              content: JSON.stringify(toolResult)
-            }]
-          });
-        } else {
-          // Server tool (web_search) — results are already in the response content
-          pendingState.progress = `Searching the web (${toolCallCount})...`;
-          history.push({ role: 'assistant', content: claudeMessage.content });
-        }
-
-        // Continue conversation
-        pendingState.progress = `Processing results (${toolCallCount})...`;
-        claudeMessage = await this.callClaudeWithRetry(client, {
+      while (continueLoop) {
+        const stream = client.messages.stream({
           model: 'claude-sonnet-4-20250514',
           max_tokens: 4096,
           system: systemPrompt,
           tools: allTools,
           messages: history
         });
+
+        // Stream text chunks to client as they arrive
+        stream.on('text', (text) => {
+          send('text', { text });
+          fullText += text;
+        });
+
+        const message = await stream.finalMessage();
+
+        if (message.stop_reason === 'tool_use') {
+          // Add assistant message to history
+          history.push({ role: 'assistant', content: message.content });
+
+          // Handle ALL tool_use blocks (not just the first)
+          const toolUses = message.content.filter(b => b.type === 'tool_use');
+          const regularTools = toolUses.filter(t => t.name !== 'web_search');
+
+          if (regularTools.length > 0) {
+            const toolResults = [];
+            for (const toolUse of regularTools) {
+              toolCallCount++;
+              send('tool', { name: toolUse.name, count: toolCallCount });
+              const result = await this.proxyToolCall(toolUse.name, toolUse.input, reqCtx);
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolUse.id,
+                content: JSON.stringify(result)
+              });
+            }
+            history.push({ role: 'user', content: toolResults });
+          }
+          // For web_search-only turns, results are already in the assistant content.
+          // Claude needs a user message to continue — send an empty acknowledgment.
+          if (regularTools.length === 0) {
+            send('tool', { name: 'web_search', count: ++toolCallCount });
+          }
+        } else {
+          // end_turn or max_tokens — we're done
+          history.push({ role: 'assistant', content: message.content });
+          continueLoop = false;
+        }
       }
-
-      // Extract final text
-      const textContent = claudeMessage.content.find(block => block.type === 'text');
-      const assistantContent = textContent ? textContent.text : 'No response generated';
-
-      // Add to history
-      history.push({ role: 'assistant', content: claudeMessage.content });
 
       // Trim and condense history
       this.trimHistory(convKey, history);
 
       // Generate TTS audio for voice requests
-      let audioUrl = null;
-      if (pendingState.isVoice) {
+      if (isVoice && fullText) {
         try {
-          pendingState.progress = 'Generating speech...';
-          const audioId = await this.generateTTS(assistantContent, domain);
-          audioUrl = `audio/${audioId}`;
+          const audioId = await this.generateTTS(fullText, domain);
+          send('audio', { url: `audio/${audioId}` });
         } catch (err) {
           console.error('[mimi] TTS generation failed:', err.message);
         }
       }
 
-      pendingState.completed = true;
-      pendingState.response = {
-        role: 'assistant',
-        content: assistantContent,
-        timestamp: new Date().toISOString(),
-        ...(audioUrl && { audioUrl })
-      };
-      pendingState.progress = 'Complete';
-
-      // Cleanup after 5 minutes
-      setTimeout(() => { this.pendingRequests.delete(token); }, 5 * 60 * 1000);
+      send('done', {});
     } catch (error) {
-      console.error('[mimi] Processing error:', error);
-      pendingState.completed = true;
-      pendingState.error = error.message;
+      console.error('[mimi] Stream processing error:', error);
+      send('error', { message: error.message });
     }
   }
 
@@ -1259,6 +1222,5 @@ User wallet address: ${userAddress}`;
 
   async cleanup() {
     this.conversations.clear();
-    this.pendingRequests.clear();
   }
 }

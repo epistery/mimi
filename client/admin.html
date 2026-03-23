@@ -189,7 +189,7 @@
         const status = await response.json();
 
         document.getElementById('session-count').textContent = status.activeSessions || 0;
-        document.getElementById('pending-count').textContent = status.pendingRequests || 0;
+        document.getElementById('pending-count').textContent = 0;
       } catch (error) {
         console.error('[mimi-admin] Status error:', error);
       }

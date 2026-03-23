@@ -273,35 +273,30 @@
         const orbLabel = document.getElementById('orbLabel');
 
         let sessionId = null;
-        // Default mic off; restore from cookie if set
+        let busy = false; // prevent overlapping requests
         let isMuted = (function() {
             const m = document.cookie.match(/(?:^|;\s*)mimi_mic=(\w+)/);
-            return m ? m[1] !== 'on' : true; // default off
+            return m ? m[1] !== 'on' : true;
         })();
         let vadInstance = null;
-        let currentAudio = null; // <audio> element for TTS playback
+        let currentAudio = null;
         let synthesis = window.speechSynthesis;
-        let audioCtx = null; // Web Audio API context, unlocked on first interaction
+        let audioCtx = null;
 
-        // Unlock audio on first user gesture (required by mobile browsers)
         function ensureAudioContext() {
             if (audioCtx) return audioCtx;
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            // Play a silent buffer to fully unlock
             const silent = audioCtx.createBuffer(1, 1, 22050);
             const src = audioCtx.createBufferSource();
             src.buffer = silent;
             src.connect(audioCtx.destination);
             src.start();
-            console.log('[Mimi] AudioContext unlocked');
             return audioCtx;
         }
-        // Attach to common user gestures
         ['click', 'touchstart', 'keydown'].forEach(evt => {
             document.addEventListener(evt, ensureAudioContext, { once: true });
         });
 
-        // State machine: idle (dormant, background wake-word check) -> thinking -> speaking -> idle
         let state = 'idle';
 
         function setState(newState, detail) {
@@ -310,7 +305,7 @@
             orbLabel.textContent = newState;
             switch (newState) {
                 case 'idle':
-                    statusText.textContent = 'Say "Mimi" to wake';
+                    statusText.textContent = isMuted ? 'Type a message' : 'Say "Mimi" to wake';
                     listenIndicator.textContent = '';
                     break;
                 case 'thinking':
@@ -328,36 +323,27 @@
             }
         }
 
-        // ---- WAV encoder: Float32Array @ 16kHz -> WAV bytes ----
+        // ---- WAV encoder ----
         function float32ToWav(samples, sampleRate) {
-            const numChannels = 1;
-            const bitsPerSample = 16;
+            const numChannels = 1, bitsPerSample = 16;
             const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
             const blockAlign = numChannels * (bitsPerSample / 8);
             const dataSize = samples.length * (bitsPerSample / 8);
             const buffer = new ArrayBuffer(44 + dataSize);
             const view = new DataView(buffer);
-
-            // RIFF header
             writeString(view, 0, 'RIFF');
             view.setUint32(4, 36 + dataSize, true);
             writeString(view, 8, 'WAVE');
-
-            // fmt chunk
             writeString(view, 12, 'fmt ');
-            view.setUint32(16, 16, true);            // chunk size
-            view.setUint16(20, 1, true);              // PCM
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
             view.setUint16(22, numChannels, true);
             view.setUint32(24, sampleRate, true);
             view.setUint32(28, byteRate, true);
             view.setUint16(32, blockAlign, true);
             view.setUint16(34, bitsPerSample, true);
-
-            // data chunk
             writeString(view, 36, 'data');
             view.setUint32(40, dataSize, true);
-
-            // Convert float32 to int16
             let offset = 44;
             for (let i = 0; i < samples.length; i++) {
                 let s = Math.max(-1, Math.min(1, samples[i]));
@@ -365,17 +351,13 @@
                 view.setInt16(offset, s, true);
                 offset += 2;
             }
-
             return buffer;
         }
-
         function writeString(view, offset, string) {
-            for (let i = 0; i < string.length; i++) {
-                view.setUint8(offset + i, string.charCodeAt(i));
-            }
+            for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
         }
 
-        // ---- Attentive mode: after Mimi speaks, listen without wake word for 10s ----
+        // ---- Attentive mode ----
         let attentive = false;
         let attentiveTimer = null;
 
@@ -385,99 +367,159 @@
             attentiveTimer = setTimeout(() => {
                 attentive = false;
                 attentiveTimer = null;
-                if (state === 'idle') statusText.textContent = 'Say "Mimi" to wake';
+                if (state === 'idle') statusText.textContent = isMuted ? 'Type a message' : 'Say "Mimi" to wake';
             }, 10000);
             statusText.textContent = 'Listening...';
         }
 
-        // ---- Send audio to server (silent until wake word matches) ----
-        let audioBusy = false;
-        async function sendAudio(float32Samples) {
-            if (state === 'muted' || audioBusy) return;
-            audioBusy = true;
+        // ---- SSE stream parser: reads fetch response body as SSE events ----
+        async function readSSEStream(response, handlers) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let currentEvent = 'message';
 
-            // Stay in idle — don't show any state change for background wake-word checks
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop(); // keep incomplete line in buffer
+
+                for (const line of lines) {
+                    if (line.startsWith('event: ')) {
+                        currentEvent = line.slice(7).trim();
+                    } else if (line.startsWith('data: ')) {
+                        const dataStr = line.slice(6);
+                        try {
+                            const data = JSON.parse(dataStr);
+                            if (handlers[currentEvent]) handlers[currentEvent](data);
+                        } catch (e) {
+                            console.warn('[Mimi] SSE parse error:', e, dataStr);
+                        }
+                        currentEvent = 'message';
+                    }
+                    // blank lines and other lines are ignored
+                }
+            }
+        }
+
+        // ---- Stream a message from the server via SSE ----
+        async function streamMessage(text, isVoice) {
+            if (busy) return;
+            busy = true;
+            setState('thinking');
+            addMessage('user', text);
+
+            const msgDiv = addMessage('assistant', '');
+            let fullText = '';
+            let audioUrl = null;
 
             try {
-                // Encode as WAV, then base64
+                const resp = await fetch('./message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text, sessionId, voice: isVoice })
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({ message: 'Server error' }));
+                    addMessage('error', err.message || err.error || 'Request failed');
+                    busy = false;
+                    setState('idle');
+                    return;
+                }
+
+                await readSSEStream(resp, {
+                    session: (data) => {
+                        if (data.sessionId) sessionId = data.sessionId;
+                    },
+                    text: (data) => {
+                        fullText += data.text;
+                        msgDiv.textContent = fullText;
+                        transcript.scrollTop = transcript.scrollHeight;
+                        // Switch to streaming state on first text
+                        if (state === 'thinking') setState('thinking', 'Responding...');
+                    },
+                    tool: (data) => {
+                        setState('thinking', 'Using ' + data.name + '...');
+                    },
+                    audio: (data) => {
+                        audioUrl = data.url;
+                    },
+                    error: (data) => {
+                        addMessage('error', data.message || 'Something went wrong');
+                    },
+                    done: () => {
+                        // Remove empty assistant bubble if no text was generated
+                        if (!fullText && msgDiv.parentNode) {
+                            msgDiv.parentNode.removeChild(msgDiv);
+                        }
+                    }
+                });
+
+                // Play audio (voice) or speak (text input fallback)
+                if (fullText) {
+                    if (audioUrl) {
+                        await playAudio(audioUrl, fullText);
+                    } else if (isVoice) {
+                        await speak(fullText);
+                    }
+                }
+            } catch (err) {
+                console.error('[Mimi] Stream error:', err);
+                if (!fullText) addMessage('error', 'Failed to get response');
+            }
+
+            busy = false;
+            setState('idle');
+            if (isVoice) startAttentiveMode();
+        }
+
+        // ---- Voice: transcribe then stream ----
+        async function sendAudio(float32Samples) {
+            if (state === 'muted' || busy) return;
+
+            try {
                 const wavBuffer = float32ToWav(float32Samples, 16000);
                 const wavBytes = new Uint8Array(wavBuffer);
                 let binary = '';
-                for (let i = 0; i < wavBytes.length; i++) {
-                    binary += String.fromCharCode(wavBytes[i]);
-                }
+                for (let i = 0; i < wavBytes.length; i++) binary += String.fromCharCode(wavBytes[i]);
                 const base64 = btoa(binary);
 
-                // POST to server — this transcribes and checks wake word
                 const resp = await fetch('./audio', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ audio: base64, sessionId, attentive })
+                    body: JSON.stringify({ audio: base64, attentive })
                 });
                 const data = await resp.json();
 
-                if (data.sessionId) sessionId = data.sessionId;
-
-                // No wake word or empty — stay dormant, no UI change
-                if (data.status === 'ignored') {
-                    audioBusy = false;
+                if (data.status === 'ignored' || data.status === 'error') {
+                    if (data.status === 'error') addMessage('error', data.message || 'Audio failed');
                     return;
                 }
 
-                if (data.status === 'error') {
-                    addMessage('error', data.message || 'Audio processing failed');
-                    audioBusy = false;
-                    return;
-                }
-
-                // Matched (wake word or attentive) — NOW show activity
+                // Wake word matched — clear attentive, stream response
                 attentive = false;
                 if (attentiveTimer) { clearTimeout(attentiveTimer); attentiveTimer = null; }
+
                 if (data.text) {
-                    addMessage('user', data.text);
-                }
-
-                if (data.status === 'working' && data.continuationToken) {
-                    setState('thinking');
-                    const result = await pollForResult(data.continuationToken);
-
-                    if (result.status === 'error') {
-                        addMessage('error', result.message || 'Something went wrong');
-                    } else if (result.response) {
-                        const content = result.response.content || result.response;
-                        addMessage('assistant', content);
-
-                        if (result.response.audioUrl) {
-                            await playAudio(result.response.audioUrl, content);
-                        } else {
-                            await speak(content);
-                        }
-                    }
+                    await streamMessage(data.text, true);
                 }
             } catch (err) {
                 console.error('[Mimi] Audio send error:', err);
                 addMessage('error', 'Failed to process audio');
             }
-
-            audioBusy = false;
-            setState('idle');
-            startAttentiveMode();
         }
 
-        // ---- TTS via speechSynthesis ----
+        // ---- TTS via speechSynthesis (fallback) ----
         function speak(text) {
             if (!synthesis || isMuted) return Promise.resolve();
             const voices = synthesis.getVoices();
-            if (!voices || voices.length === 0) {
-                console.warn('[Mimi] No speechSynthesis voices available, skipping TTS');
-                return Promise.resolve();
-            }
+            if (!voices || voices.length === 0) return Promise.resolve();
             return new Promise((resolve) => {
-                const timeout = setTimeout(() => {
-                    console.warn('[Mimi] speechSynthesis timed out');
-                    synthesis.cancel();
-                    resolve();
-                }, 30000);
+                const timeout = setTimeout(() => { synthesis.cancel(); resolve(); }, 30000);
                 synthesis.cancel();
                 setState('speaking');
                 const utterance = new SpeechSynthesisUtterance(text);
@@ -489,13 +531,12 @@
             });
         }
 
-        // ---- Play server TTS WAV via Web Audio API (bypasses autoplay restrictions) ----
+        // ---- Play server TTS WAV via Web Audio API ----
         function playAudio(url, fallbackText) {
             if (isMuted) return Promise.resolve();
             return new Promise(async (resolve) => {
                 setState('speaking');
                 const audioUrl = './' + url;
-                console.log('[Mimi] Playing audio:', audioUrl);
                 try {
                     const ctx = ensureAudioContext();
                     if (ctx.state === 'suspended') await ctx.resume();
@@ -506,13 +547,9 @@
                     const source = ctx.createBufferSource();
                     source.buffer = audioBuffer;
                     source.connect(ctx.destination);
-                    source.onended = () => {
-                        console.log('[Mimi] Audio playback complete');
-                        resolve();
-                    };
+                    source.onended = () => resolve();
                     source.start();
                     currentAudio = source;
-                    console.log('[Mimi] Audio play started via Web Audio API');
                 } catch (e) {
                     console.error('[Mimi] WAV playback failed:', e);
                     currentAudio = null;
@@ -521,13 +558,13 @@
             });
         }
 
-        // ---- Text input (unchanged) ----
+        // ---- Text input ----
         textInput.addEventListener('keydown', function(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 const text = textInput.value.trim();
                 if (text) {
-                    sendMessage(text);
+                    streamMessage(text, false);
                     textInput.value = '';
                 }
             }
@@ -535,7 +572,7 @@
         sendBtn.addEventListener('click', function() {
             const text = textInput.value.trim();
             if (text) {
-                sendMessage(text);
+                streamMessage(text, false);
                 textInput.value = '';
             }
         });
@@ -549,64 +586,6 @@
             return div;
         }
 
-        async function sendMessage(text) {
-            setState('thinking');
-            addMessage('user', text);
-
-            try {
-                const resp = await fetch('./message', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: text, sessionId })
-                });
-                let data = await resp.json();
-
-                if (!sessionId && data.sessionId) sessionId = data.sessionId;
-
-                if (data.status === 'working' && data.continuationToken) {
-                    data = await pollForResult(data.continuationToken);
-                }
-
-                if (data.status === 'error') {
-                    addMessage('error', data.message || 'Something went wrong');
-                } else if (data.response) {
-                    const content = data.response.content || data.response;
-                    addMessage('assistant', content);
-                    await speak(content);
-                }
-            } catch (err) {
-                console.error('[Mimi] Send error:', err);
-                addMessage('error', 'Failed to send message');
-            }
-
-            setState('idle');
-        }
-
-        async function pollForResult(token) {
-            const pollInterval = 1500;
-            const maxPolls = 60;
-
-            for (let i = 0; i < maxPolls; i++) {
-                await new Promise(r => setTimeout(r, pollInterval));
-
-                const resp = await fetch('./message', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ continuationToken: token })
-                });
-                const data = await resp.json();
-
-                if (data.progress) {
-                    statusText.textContent = data.progress;
-                }
-
-                if (data.status !== 'working') {
-                    return data;
-                }
-            }
-            return { status: 'error', message: 'Request timed out' };
-        }
-
         // ---- Mute toggle ----
         function applyMuteUI() {
             muteBtn.classList.toggle('muted', isMuted);
@@ -614,12 +593,10 @@
             document.getElementById('muteWave1').style.display = isMuted ? 'none' : '';
             document.getElementById('muteWave2').style.display = isMuted ? 'none' : '';
         }
-        // Apply initial mute state to button
         applyMuteUI();
 
         muteBtn.addEventListener('click', function() {
             isMuted = !isMuted;
-            // Save preference as cookie (30 days)
             document.cookie = 'mimi_mic=' + (isMuted ? 'off' : 'on') + ';path=/;max-age=' + (30*86400);
             applyMuteUI();
 
@@ -627,7 +604,6 @@
                 if (isMuted) {
                     vadInstance.pause();
                     setState('muted');
-                    // Stop any playing audio
                     if (synthesis) synthesis.cancel();
                     if (currentAudio) {
                         try { currentAudio.stop(); } catch(_) {}
@@ -643,47 +619,32 @@
         // ---- VAD initialization ----
         async function initVAD() {
             if (typeof vad === 'undefined') {
-                addMessage('error', 'VAD library failed to load. Check network connection.');
+                addMessage('error', 'VAD library failed to load.');
                 statusText.textContent = 'VAD unavailable';
                 return;
             }
-
             try {
                 vadInstance = await vad.MicVAD.new({
                     positiveSpeechThreshold: 0.8,
                     negativeSpeechThreshold: 0.15,
-                    minSpeechFrames: 8,         // ~0.5s at 16kHz / 512 frame size
+                    minSpeechFrames: 8,
                     preSpeechPadFrames: 5,
-                    redemptionFrames: 16,        // ~500ms silence before cutoff
-
-                    onSpeechStart: () => {
-                        // Stay dormant — no visible state change
-                        // The orb only wakes up after wake word is confirmed
-                    },
-
+                    redemptionFrames: 16,
+                    onSpeechStart: () => {},
                     onSpeechEnd: (audio) => {
-                        if (isMuted) return;
-                        // audio is Float32Array at 16kHz
-                        if (audio.length < 8000) {
-                            // Less than 0.5s — too short, ignore
-                            return;
-                        }
+                        if (isMuted || audio.length < 8000) return;
                         sendAudio(audio);
                     },
-
-                    onVADMisfire: () => {
-                        // Nothing to do — orb is already idle
-                    }
+                    onVADMisfire: () => {}
                 });
 
                 if (isMuted) {
-                    // Don't start mic — user prefers typing
                     setState('muted');
                     statusText.textContent = 'Type a message or unmute to talk';
                 } else {
                     vadInstance.start();
                     setState('idle');
-                    addMessage('system', 'Listening for "Mimi" wake word. Say "Mimi" followed by your request.');
+                    addMessage('system', 'Say "Mimi" followed by your request.');
                 }
             } catch (err) {
                 console.error('[Mimi] VAD init error:', err);
