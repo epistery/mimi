@@ -161,19 +161,25 @@
             display: flex;
             gap: 8px;
             flex: 1;
-            max-width: 400px;
+            align-items: flex-end;
         }
-        .text-input input {
+        .text-input textarea {
             flex: 1;
             padding: 10px 14px;
             border: 1px solid var(--page-border);
-            border-radius: 20px;
+            border-radius: 16px;
             font-size: 15px;
             outline: none;
             background: var(--bg-color);
             color: var(--text-color);
+            font-family: inherit;
+            resize: none;
+            min-height: 40px;
+            max-height: 150px;
+            overflow-y: auto;
+            line-height: 1.4;
         }
-        .text-input input:focus {
+        .text-input textarea:focus {
             border-color: var(--primary);
         }
         .text-input button {
@@ -240,7 +246,7 @@
 
     <div class="controls">
         <div class="text-input">
-            <input type="text" id="textInput" placeholder="Type a message..." autocomplete="off">
+            <textarea id="textInput" placeholder="Type a message..." rows="1" autocomplete="off"></textarea>
             <button id="sendBtn">Send</button>
         </div>
         <button class="mute-btn" id="muteBtn" title="Mute microphone">
@@ -559,6 +565,11 @@
         }
 
         // ---- Text input ----
+        function autoResize() {
+            textInput.style.height = 'auto';
+            textInput.style.height = textInput.scrollHeight + 'px';
+        }
+        textInput.addEventListener('input', autoResize);
         textInput.addEventListener('keydown', function(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -566,6 +577,7 @@
                 if (text) {
                     streamMessage(text, false);
                     textInput.value = '';
+                    autoResize();
                 }
             }
         });
@@ -574,6 +586,7 @@
             if (text) {
                 streamMessage(text, false);
                 textInput.value = '';
+                autoResize();
             }
         });
 
