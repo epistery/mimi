@@ -152,7 +152,7 @@
         }
         .text-input textarea {
             flex: 1;
-            padding: 0 14px;
+            padding: 9px 14px;
             border: 1px solid var(--page-border);
             border-radius: 20px;
             font-size: 15px;
@@ -163,9 +163,9 @@
             resize: none;
             height: 40px;
             min-height: 40px;
-            max-height: 150px;
-            overflow-y: auto;
-            line-height: 40px;
+            max-height: 120px;
+            overflow: hidden;
+            line-height: 1.4;
             box-sizing: border-box;
         }
         .text-input textarea:focus {
@@ -198,13 +198,6 @@
         }
         .mute-btn:hover {
             border-color: var(--primary);
-        }
-        .mute-btn.muted {
-            border-color: var(--action-color);
-            background: var(--action-color);
-        }
-        .mute-btn.muted svg {
-            stroke: #fff;
         }
         .mute-btn svg {
             width: 20px;
@@ -702,7 +695,14 @@
         // ---- Text input ----
         function autoResize() {
             textInput.style.height = 'auto';
-            textInput.style.height = textInput.scrollHeight + 'px';
+            textInput.style.overflow = 'hidden';
+            const maxH = parseInt(getComputedStyle(textInput).maxHeight);
+            if (textInput.scrollHeight > maxH) {
+                textInput.style.height = maxH + 'px';
+                textInput.style.overflow = 'auto';
+            } else {
+                textInput.style.height = textInput.scrollHeight + 'px';
+            }
         }
         textInput.addEventListener('input', autoResize);
         function handleSend() {
