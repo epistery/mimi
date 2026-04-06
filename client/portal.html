@@ -96,6 +96,27 @@
             flex-shrink: 0;
         }
 
+        /* Mobile: stack text input above action buttons */
+        @media (max-width: 600px) {
+            .controls {
+                flex-wrap: wrap;
+            }
+            .text-input {
+                flex-basis: 100%;
+            }
+            .status-orb {
+                width: 64px;
+                height: 64px;
+            }
+            .status-orb svg {
+                width: 24px;
+                height: 24px;
+            }
+            .status-orb .orb-label {
+                font-size: 10px;
+            }
+        }
+
         /* Status orb — replaces talk button */
         .status-orb {
             width: 120px;
