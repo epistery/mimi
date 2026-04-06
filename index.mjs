@@ -280,7 +280,8 @@ export default class MimiAgent {
       episteryClient: req.episteryClient,
       domainAcl: req.domainAcl,
       hostname: req.hostname,
-      port: this.getInternalPort(req)
+      port: this.getInternalPort(req),
+      userVault: req.userVault || null
     };
   }
 
@@ -1018,7 +1019,20 @@ export default class MimiAgent {
         // Get or initialize conversation
         const convKey = sessionId || `mimi-${req.episteryClient?.address || 'anon'}-${Date.now()}`;
         if (!this.conversations.has(convKey)) {
-          this.conversations.set(convKey, []);
+          // Try to restore from UserVault so context survives agent switches
+          let restored = [];
+          if (req.userVault) {
+            try {
+              const vault = await req.userVault.get();
+              if (vault.mimi?.history && Array.isArray(vault.mimi.history)) {
+                restored = vault.mimi.history;
+                console.log(`[mimi] Restored ${restored.length} messages from vault for ${req.episteryClient?.address}`);
+              }
+            } catch (err) {
+              console.error('[mimi] Vault restore error:', err.message);
+            }
+          }
+          this.conversations.set(convKey, restored);
         }
         const history = this.conversations.get(convKey);
 
@@ -1039,6 +1053,15 @@ export default class MimiAgent {
         // Stream the response
         const reqCtx = this.captureRequestContext(req);
         await this.processMessageStream(reqCtx, history, convKey, res, !!voice);
+
+        // Persist trimmed history to UserVault
+        if (reqCtx.userVault) {
+          try {
+            await reqCtx.userVault.merge({ mimi: { history, updatedAt: Date.now() } });
+          } catch (err) {
+            console.error('[mimi] Vault save error:', err.message);
+          }
+        }
 
         res.end();
       } catch (error) {
