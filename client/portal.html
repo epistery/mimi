@@ -216,6 +216,32 @@
             stroke-linejoin: round;
         }
 
+        .clear-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: 2px solid var(--page-border);
+            background: var(--bg-color);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            box-sizing: border-box;
+        }
+        .clear-btn:hover {
+            border-color: var(--primary);
+        }
+        .clear-btn svg {
+            width: 18px;
+            height: 18px;
+            stroke: var(--text-color);
+            fill: none;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+
         .listening-indicator {
             font-size: 13px;
             color: var(--accent);
@@ -270,13 +296,19 @@
                 height: 36px;
                 flex-shrink: 0;
             }
+            .clear-btn {
+                order: 3;
+                width: 36px;
+                height: 36px;
+                flex-shrink: 0;
+            }
             /* Line 2: small mic icon + status text */
             .status-orb,
             .status-orb.idle,
             .status-orb.thinking,
             .status-orb.speaking,
             .status-orb.muted {
-                order: 3;
+                order: 4;
                 flex-basis: 100%;
                 width: 100%;
                 height: auto;
@@ -342,6 +374,15 @@
                 <path d="M15.54 8.46a5 5 0 0 1 0 7.07" id="muteWave2"/>
             </svg>
         </button>
+        <button class="clear-btn" id="clearBtn" title="Clear conversation">
+            <svg viewBox="0 0 24 24">
+                <path d="M3 6h18"/>
+                <path d="M8 6V4h8v2"/>
+                <path d="M5 6l1 14h12l1-14"/>
+                <path d="M10 11v6"/>
+                <path d="M14 11v6"/>
+            </svg>
+        </button>
         <div class="status-orb idle" id="statusOrb">
             <svg viewBox="0 0 24 24">
                 <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
@@ -363,6 +404,7 @@
         const muteBtn = document.getElementById('muteBtn');
         const statusOrb = document.getElementById('statusOrb');
         const orbLabel = document.getElementById('orbLabel');
+        const clearBtn = document.getElementById('clearBtn');
 
         let sessionId = null;
         let busy = false; // prevent overlapping requests
@@ -590,6 +632,10 @@
                 });
                 const data = await resp.json();
 
+                if (data.status === 'clear') {
+                    await clearSession();
+                    return;
+                }
                 if (data.status === 'ignored' || data.status === 'error') {
                     if (data.status === 'error') addMessage('error', data.message || 'Audio failed');
                     return;
@@ -659,33 +705,25 @@
             textInput.style.height = textInput.scrollHeight + 'px';
         }
         textInput.addEventListener('input', autoResize);
+        function handleSend() {
+            const text = textInput.value.trim();
+            if (!text) return;
+            textInput.value = '';
+            autoResize();
+            if (/^clear$/i.test(text)) {
+                clearSession();
+            } else {
+                streamMessage(text, false);
+            }
+        }
         textInput.addEventListener('keydown', function(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                const text = textInput.value.trim();
-                if (text) {
-                    streamMessage(text, false);
-                    textInput.value = '';
-                    autoResize();
-                }
+                handleSend();
             }
         });
-        sendBtn.addEventListener('click', function() {
-            const text = textInput.value.trim();
-            if (text) {
-                streamMessage(text, false);
-                textInput.value = '';
-                autoResize();
-            }
-        });
-        document.getElementById('mobileSendBtn').addEventListener('click', function() {
-            const text = textInput.value.trim();
-            if (text) {
-                streamMessage(text, false);
-                textInput.value = '';
-                autoResize();
-            }
-        });
+        sendBtn.addEventListener('click', handleSend);
+        document.getElementById('mobileSendBtn').addEventListener('click', handleSend);
 
         function addMessage(role, text) {
             const div = document.createElement('div');
@@ -694,6 +732,39 @@
             transcript.appendChild(div);
             transcript.scrollTop = transcript.scrollHeight;
             return div;
+        }
+
+        // ---- Clear session ----
+        async function clearSession() {
+            try {
+                await fetch('./clear', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId })
+                });
+            } catch (e) {
+                console.error('[Mimi] Clear error:', e);
+            }
+            sessionId = null;
+            transcript.innerHTML = '';
+            addMessage('system', 'Conversation cleared.');
+        }
+
+        clearBtn.addEventListener('click', clearSession);
+
+        // ---- Load prior conversation from vault ----
+        async function loadHistory() {
+            try {
+                const resp = await fetch('./history');
+                const data = await resp.json();
+                if (data.history && data.history.length > 0) {
+                    for (const msg of data.history) {
+                        addMessage(msg.role, msg.text);
+                    }
+                }
+            } catch (e) {
+                console.error('[Mimi] History load error:', e);
+            }
         }
 
         // ---- Mute toggle ----
@@ -762,6 +833,7 @@
             }
         }
 
+        loadHistory();
         initVAD();
     })();
     </script>

@@ -172,6 +172,10 @@ export default class MimiAgent {
       || lower.match(/^mimi[,.\s!]*(.*)$/i);
     if (match) {
       const command = match[1]?.trim() || '';
+      // Check for "clear" command
+      if (/^clear$/i.test(command)) {
+        return { matched: true, command: '', clear: true };
+      }
       return { matched: true, command };
     }
     return { matched: false, command: '' };
@@ -951,6 +955,65 @@ export default class MimiAgent {
       res.sendFile(filePath);
     });
 
+    // History endpoint — restore prior conversation from UserVault
+    router.get('/history', async (req, res) => {
+      try {
+        const permissions = await this.getPermissions(req);
+        if (!permissions.read || !req.userVault) {
+          return res.json({ history: [] });
+        }
+        const vault = await req.userVault.get();
+        const history = vault.mimi?.history;
+        if (!Array.isArray(history) || history.length === 0) {
+          return res.json({ history: [] });
+        }
+        // Extract displayable messages (role + text content only)
+        const messages = [];
+        for (const msg of history) {
+          const role = msg.role;
+          let text = '';
+          if (typeof msg.content === 'string') {
+            text = msg.content;
+          } else if (Array.isArray(msg.content)) {
+            text = msg.content
+              .filter(b => b.type === 'text')
+              .map(b => b.text)
+              .join('');
+          }
+          if (text && (role === 'user' || role === 'assistant')) {
+            messages.push({ role, text });
+          }
+        }
+        res.json({ history: messages });
+      } catch (err) {
+        console.error('[mimi] History endpoint error:', err.message);
+        res.json({ history: [] });
+      }
+    });
+
+    // Clear endpoint — wipe conversation history
+    router.post('/clear', async (req, res) => {
+      try {
+        const permissions = await this.getPermissions(req);
+        if (!permissions.read) {
+          return res.status(403).json({ error: 'Permission required' });
+        }
+        const { sessionId } = req.body || {};
+        // Clear in-memory session
+        if (sessionId && this.conversations.has(sessionId)) {
+          this.conversations.delete(sessionId);
+        }
+        // Clear vault history
+        if (req.userVault) {
+          await req.userVault.merge({ mimi: { history: [], updatedAt: Date.now() } });
+        }
+        res.json({ success: true });
+      } catch (err) {
+        console.error('[mimi] Clear error:', err.message);
+        res.status(500).json({ error: err.message });
+      }
+    });
+
     // Voice audio endpoint — transcribe + wake word check only.
     // Returns the transcribed text; client streams response via /message.
     router.post('/audio', async (req, res) => {
@@ -986,12 +1049,14 @@ export default class MimiAgent {
         let message;
         if (attentive) {
           const wake = this.checkWakeWord(text);
+          if (wake.clear) return res.json({ status: 'clear' });
           message = wake.matched ? (wake.command || text) : text;
         } else {
           const wake = this.checkWakeWord(text);
           if (!wake.matched) {
             return res.json({ status: 'ignored', reason: 'no-wake-word', text });
           }
+          if (wake.clear) return res.json({ status: 'clear' });
           message = wake.command || text;
         }
 
