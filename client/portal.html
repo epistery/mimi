@@ -40,9 +40,7 @@
             color: var(--primary);
         }
         .portal-header .status {
-            margin-left: auto;
-            font-size: 12px;
-            color: var(--text-color-quiet);
+            display: none;
         }
 
         .transcript {
@@ -89,106 +87,62 @@
         }
 
         .controls {
-            padding: 12px 16px;
+            padding: 10px 16px;
             display: flex;
             align-items: center;
-            justify-content: center;
-            gap: 12px;
+            flex-wrap: wrap;
+            gap: 8px;
             background: var(--bg-color-d);
             flex-shrink: 0;
         }
 
-        /* Mobile: text input full-width on top, buttons row below */
-        @media (max-width: 600px) {
-            .controls {
-                flex-wrap: wrap;
-                padding: 10px 12px;
-                gap: 8px;
-            }
-            .text-input {
-                flex-basis: 100%;
-                order: -1;
-            }
-            /* Orb becomes a horizontal pill — wide, short */
-            .status-orb {
-                width: auto;
-                height: 40px;
-                border-radius: 20px;
-                flex: 1;
-                flex-direction: row;
-                gap: 8px;
-                padding: 0 16px;
-            }
-            .status-orb svg {
-                width: 20px;
-                height: 20px;
-            }
-            .status-orb .orb-label {
-                font-size: 12px;
-                margin-top: 0;
-            }
-        }
-
-        /* Status orb — replaces talk button */
+        /* Status indicator — line 2 under controls */
         .status-orb {
-            width: 120px;
-            height: 120px;
-            border-radius: 50%;
-            border: 3px solid var(--page-border);
-            background: var(--bg-color);
+            order: 3;
+            flex-basis: 100%;
+            width: 100%;
+            height: auto;
             display: flex;
             align-items: center;
-            justify-content: center;
-            flex-direction: column;
-            transition: all 0.3s;
+            flex-direction: row;
+            gap: 6px;
+            padding: 0 2px;
+            justify-content: flex-start;
+            overflow: hidden;
             cursor: default;
-            position: relative;
+            border: none;
+            border-radius: 0;
+            background: transparent;
         }
         .status-orb .orb-label {
             font-size: 13px;
             color: var(--text-color-quiet);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-top: 4px;
+            letter-spacing: 0;
+            text-transform: none;
+            margin-top: 0;
+            line-height: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         .status-orb svg {
-            width: 36px;
-            height: 36px;
+            width: 12px;
+            height: 12px;
             stroke: var(--text-color-quiet);
             fill: none;
             stroke-width: 2;
             stroke-linecap: round;
             stroke-linejoin: round;
+            flex-shrink: 0;
         }
 
-        /* Orb states */
-        .status-orb.idle {
-            border-color: var(--page-border);
-        }
+        /* Orb states — color only */
         .status-orb.idle svg { stroke: var(--text-color-quiet); }
-
-        .status-orb.thinking {
-            border-color: var(--rust-mid, #a04020);
-            animation: pulse-rust 2s infinite;
-        }
         .status-orb.thinking svg { stroke: var(--rust-mid, #a04020); }
-
-        .status-orb.speaking {
-            border-color: var(--primary);
-            background: var(--primary);
-        }
-        .status-orb.speaking svg { stroke: #fff; }
-        .status-orb.speaking .orb-label { color: #fff; }
-
-        .status-orb.muted {
-            border-color: var(--action-color, #c00);
-            opacity: 0.5;
-        }
-
-        @keyframes pulse-rust {
-            0%, 100% { box-shadow: 0 0 0 0 rgba(160, 64, 32, 0.3); }
-            50% { box-shadow: 0 0 0 12px rgba(160, 64, 32, 0); }
-        }
+        .status-orb.thinking .orb-label { color: var(--rust-mid, #a04020); }
+        .status-orb.speaking svg { stroke: var(--primary); }
+        .status-orb.speaking .orb-label { color: var(--primary); }
+        .status-orb.muted { opacity: 0.5; }
 
         .text-input {
             display: flex;
@@ -198,31 +152,35 @@
         }
         .text-input textarea {
             flex: 1;
-            padding: 10px 14px;
+            padding: 0 14px;
             border: 1px solid var(--page-border);
-            border-radius: 16px;
+            border-radius: 20px;
             font-size: 15px;
             outline: none;
             background: var(--bg-color);
             color: var(--text-color);
             font-family: inherit;
             resize: none;
+            height: 40px;
             min-height: 40px;
             max-height: 150px;
             overflow-y: auto;
-            line-height: 1.4;
+            line-height: 40px;
+            box-sizing: border-box;
         }
         .text-input textarea:focus {
             border-color: var(--primary);
         }
         .text-input button {
-            padding: 10px 16px;
+            height: 40px;
+            padding: 0 18px;
             border: none;
             border-radius: 20px;
             background: var(--primary);
             color: #fff;
             cursor: pointer;
             font-size: 14px;
+            box-sizing: border-box;
         }
 
         .mute-btn {
@@ -230,6 +188,7 @@
             height: 40px;
             border-radius: 50%;
             border: 2px solid var(--page-border);
+            box-sizing: border-box;
             background: var(--bg-color);
             cursor: pointer;
             display: flex;
@@ -266,6 +225,96 @@
         .listening-indicator:empty {
             display: none;
         }
+
+        /* Hide mobile send on desktop */
+        .mobile-send { display: none; }
+
+        /* Mobile layout — MUST be after desktop rules to override */
+        @media (max-width: 600px) {
+            .controls {
+                flex-wrap: wrap;
+                padding: 8px 10px;
+                gap: 6px;
+            }
+            /* Line 1: textarea + send + mute, all same height */
+            .text-input {
+                order: 0;
+                flex: 1;
+                min-width: 0;
+            }
+            .text-input textarea {
+                min-height: 36px;
+                max-height: 36px;
+                padding: 8px 12px;
+            }
+            .text-input button { display: none; }
+            .mobile-send {
+                display: flex !important;
+                order: 1;
+                width: 72px;
+                height: 36px;
+                padding: 0;
+                border: none;
+                border-radius: 18px;
+                background: var(--primary);
+                color: #fff;
+                cursor: pointer;
+                font-size: 14px;
+                align-items: center;
+                justify-content: center;
+                flex-shrink: 0;
+            }
+            .mute-btn {
+                order: 2;
+                width: 36px;
+                height: 36px;
+                flex-shrink: 0;
+            }
+            /* Line 2: small mic icon + status text */
+            .status-orb,
+            .status-orb.idle,
+            .status-orb.thinking,
+            .status-orb.speaking,
+            .status-orb.muted {
+                order: 3;
+                flex-basis: 100%;
+                width: 100%;
+                height: auto;
+                border: none;
+                border-radius: 0;
+                background: transparent;
+                box-shadow: none;
+                animation: none;
+                flex-direction: row;
+                gap: 4px;
+                padding: 0 2px;
+                justify-content: flex-start;
+                overflow: hidden;
+                cursor: default;
+                opacity: 1;
+            }
+            .status-orb svg {
+                width: 10px;
+                height: 10px;
+                flex-shrink: 0;
+            }
+            .status-orb .orb-label {
+                font-size: 12px;
+                margin-top: 0;
+                line-height: 1;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                text-transform: none;
+                letter-spacing: 0;
+            }
+            .portal-header .status {
+                display: none;
+            }
+            .status-orb.speaking svg { stroke: var(--primary); }
+            .status-orb.speaking .orb-label { color: var(--primary); }
+            .status-orb.muted { opacity: 0.6; }
+        }
     </style>
 </head>
 <body>
@@ -285,6 +334,7 @@
             <textarea id="textInput" placeholder="Type a message..." rows="1" autocomplete="off"></textarea>
             <button id="sendBtn">Send</button>
         </div>
+        <button class="mobile-send" id="mobileSendBtn">Send</button>
         <button class="mute-btn" id="muteBtn" title="Mute microphone">
             <svg viewBox="0 0 24 24">
                 <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
@@ -344,25 +394,28 @@
         function setState(newState, detail) {
             state = newState;
             statusOrb.className = 'status-orb ' + newState;
-            orbLabel.textContent = newState;
+            listenIndicator.textContent = '';
+            let label, header;
             switch (newState) {
                 case 'idle':
-                    statusText.textContent = isMuted ? 'Type a message' : 'Say "Mimi" to wake';
-                    listenIndicator.textContent = '';
+                    header = isMuted ? 'Type a message' : 'Say "Mimi" to wake';
+                    label = header;
                     break;
                 case 'thinking':
-                    statusText.textContent = detail || 'Thinking...';
-                    listenIndicator.textContent = '';
+                    header = detail || 'Thinking...';
+                    label = header;
                     break;
                 case 'speaking':
-                    statusText.textContent = 'Speaking...';
-                    listenIndicator.textContent = '';
+                    header = 'Speaking...';
+                    label = 'speaking';
                     break;
                 case 'muted':
-                    statusText.textContent = 'Muted';
-                    listenIndicator.textContent = '';
+                    header = 'Muted';
+                    label = 'type a message or unmute';
                     break;
             }
+            statusText.textContent = header;
+            orbLabel.textContent = label;
         }
 
         // ---- WAV encoder ----
@@ -409,7 +462,7 @@
             attentiveTimer = setTimeout(() => {
                 attentive = false;
                 attentiveTimer = null;
-                if (state === 'idle') statusText.textContent = isMuted ? 'Type a message' : 'Say "Mimi" to wake';
+                if (state === 'idle') setState('idle');
             }, 10000);
             statusText.textContent = 'Listening...';
         }
@@ -625,6 +678,14 @@
                 autoResize();
             }
         });
+        document.getElementById('mobileSendBtn').addEventListener('click', function() {
+            const text = textInput.value.trim();
+            if (text) {
+                streamMessage(text, false);
+                textInput.value = '';
+                autoResize();
+            }
+        });
 
         function addMessage(role, text) {
             const div = document.createElement('div');
@@ -689,7 +750,6 @@
 
                 if (isMuted) {
                     setState('muted');
-                    statusText.textContent = 'Type a message or unmute to talk';
                 } else {
                     vadInstance.start();
                     setState('idle');
