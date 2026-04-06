@@ -206,7 +206,11 @@ export default class MimiAgent {
           cleaned.push(block);
         }
       } else if (block.type === 'tool_use') {
-        // Keep tool_use but truncate large inputs
+        // Drop web_search tool_use — its results (server_content /
+        // web_search_tool_result) are already stripped above, so keeping
+        // the tool_use orphans it and causes a 400 on replay.
+        if (block.name === 'web_search') continue;
+        // Keep other tool_use but truncate large inputs
         const inputStr = JSON.stringify(block.input);
         if (inputStr.length > 500) {
           cleaned.push({ ...block, input: { summary: inputStr.substring(0, 200) + '...' } });
