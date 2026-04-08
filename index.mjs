@@ -201,6 +201,11 @@ export default class MimiAgent {
     for (const block of content) {
       // Drop search result payloads entirely (massive HTML)
       if (block.type === 'server_content' || block.type === 'web_search_tool_result') continue;
+      // Drop server-side tool_use blocks (e.g. web_search). These are paired
+      // with web_search_tool_result blocks which we strip above; if we keep
+      // the server_tool_use the API 400s on replay with "tool use ... was
+      // found without a corresponding ... result block".
+      if (block.type === 'server_tool_use') continue;
 
       if (block.type === 'text') {
         // Always strip citations — they're rendering metadata, not context
@@ -331,9 +336,11 @@ export default class MimiAgent {
         }
         case 'wiki_write': {
           const docId = args.id || args.title;
+          const payload = { title: args.title, body: args.content };
+          if (args.visibility) payload.visibility = args.visibility;
           const data = await api(`/agent/epistery/wiki/${encodeURIComponent(docId)}`, {
             method: 'POST',
-            body: JSON.stringify({ title: args.title, body: args.content })
+            body: JSON.stringify(payload)
           });
           return data;
         }
@@ -467,7 +474,8 @@ export default class MimiAgent {
           properties: {
             id: { type: 'string', description: 'Document ID - a WikiWord using only letters, numbers, and underscores (min 3 chars). Examples: "BedfordStreetHistory", "AboutUs", "FAQ_Page"' },
             title: { type: 'string', description: 'Human-readable page title (e.g., "73 Bedford Street History")' },
-            content: { type: 'string', description: 'Page content (markdown)' }
+            content: { type: 'string', description: 'Page content (markdown)' },
+            visibility: { type: 'string', description: 'Optional visibility/ACL key for this page (e.g. "default", "michael-mandy"). Omit to keep current.' }
           },
           required: ['id', 'title', 'content']
         }
