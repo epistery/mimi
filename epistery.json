@@ -4,6 +4,5 @@
   "description": "Voice portal - talk to your epistery host",
   "main": "index.mjs",
   "icon": "/agent/epistery/mimi/icon.svg",
-  "permissions": ["mimi:use"],
   "config": {}
 }

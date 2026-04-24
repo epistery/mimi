@@ -328,115 +328,43 @@ export default class MimiAgent {
     };
 
     try {
-      switch (toolName) {
-        // Wiki
-        case 'wiki_read': {
-          const data = await api(`/agent/epistery/wiki/${encodeURIComponent(args.page)}`);
-          return data.error ? { error: data.error } : data;
-        }
-        case 'wiki_write': {
-          const docId = args.id || args.title;
-          const payload = { title: args.title, body: args.content };
-          if (args.visibility) payload.visibility = args.visibility;
-          const data = await api(`/agent/epistery/wiki/${encodeURIComponent(docId)}`, {
-            method: 'POST',
-            body: JSON.stringify(payload)
-          });
-          return data;
-        }
-        case 'wiki_list': {
-          return await api('/agent/epistery/wiki/index');
-        }
+      // whoami is handled directly — everything else routes through agent registry
+      if (toolName === 'whoami') {
+        return {
+          wallet: reqCtx.episteryClient?.address || null,
+          authMethod: reqCtx.episteryClient?.authType || 'none',
+          authenticated: !!reqCtx.episteryClient?.authenticated,
+          domain: reqCtx.hostname
+        };
+      }
 
-        // Archives
-        case 'archive_create': {
-          return await api('/agent/rootz/archive-agent/create', {
-            method: 'POST',
-            body: JSON.stringify({ title: args.title, content: args.content, tags: args.tags || [], templateType: args.templateType })
-          });
-        }
-        case 'archive_list': {
-          const params = new URLSearchParams();
-          if (args.limit) params.set('limit', args.limit);
-          if (args.offset) params.set('offset', args.offset);
-          if (args.tags) params.set('tags', args.tags);
-          if (args.template) params.set('template', args.template);
-          const qs = params.toString();
-          return await api(`/agent/rootz/archive-agent/list${qs ? '?' + qs : ''}`);
-        }
-        case 'archive_search': {
-          const params = new URLSearchParams({ q: args.query });
-          if (args.limit) params.set('limit', args.limit);
-          return await api(`/agent/rootz/archive-agent/search?${params}`);
-        }
-        case 'archive_read': {
-          const data = await api(`/agent/rootz/archive-agent/read/${encodeURIComponent(args.id)}`);
-          return data.error ? { error: data.error } : data;
-        }
-        case 'archive_stats': {
-          return await api('/agent/rootz/archive-agent/stats');
-        }
+      const agentTool = this._findAgentTool(toolName);
+      if (!agentTool) return { error: `Unknown tool: ${toolName}` };
 
-        // Messages
-        case 'message_list': {
-          return await api('/agent/epistery/message-board/api/posts');
-        }
-        case 'message_post': {
-          return await api('/agent/epistery/message-board/api/posts', {
-            method: 'POST',
-            body: JSON.stringify({ text: args.text })
-          });
-        }
+      // Bridged tools route through PeerBridge WebSocket
+      if (agentTool.bridged && typeof this.config.callBridgedTool === 'function') {
+        return await this.config.callBridgedTool(agentTool.peerId, toolName, args);
+      }
 
-        // Secrets
-        case 'secret_list': {
-          return await api('/agent/rootz/secret-agent/secrets');
+      // Substitute {param} placeholders in path with arg values
+      const pathParams = new Set(agentTool.path.match(/\{(\w+)\}/g)?.map(p => p.slice(1, -1)) || []);
+      const toolPath = agentTool.path.replace(/\{(\w+)\}/g, (_, key) =>
+        encodeURIComponent(args[key] || '')
+      );
+      const fullPath = `${agentTool.basePath}${toolPath}`;
+
+      if (agentTool.method === 'GET') {
+        const queryArgs = Object.entries(args).filter(([k]) => !pathParams.has(k) && args[k] != null);
+        if (queryArgs.length) {
+          const qs = new URLSearchParams(queryArgs).toString();
+          return await api(`${fullPath}?${qs}`);
         }
-
-        // Identity
-        case 'whoami': {
-          return {
-            wallet: reqCtx.episteryClient?.address || null,
-            authMethod: reqCtx.episteryClient?.authType || 'none',
-            authenticated: !!reqCtx.episteryClient?.authenticated,
-            domain: reqCtx.hostname
-          };
-        }
-
-        default: {
-          // Check agent tool registry for dynamically declared tools
-          const agentTool = this._findAgentTool(toolName);
-          if (agentTool) {
-            // Bridged tools route through PeerBridge WebSocket
-            if (agentTool.bridged && typeof this.config.callBridgedTool === 'function') {
-              return await this.config.callBridgedTool(agentTool.peerId, toolName, args);
-            }
-
-            // Substitute {param} placeholders in path with arg values
-            let toolPath = agentTool.path.replace(/\{(\w+)\}/g, (_, key) =>
-              encodeURIComponent(args[key] || '')
-            );
-            const fullPath = `${agentTool.basePath}${toolPath}`;
-
-            if (agentTool.method === 'GET') {
-              // Remaining args (not consumed by path) become query params
-              const pathParams = new Set(agentTool.path.match(/\{(\w+)\}/g)?.map(p => p.slice(1, -1)) || []);
-              const queryArgs = Object.entries(args).filter(([k]) => !pathParams.has(k) && args[k] != null);
-              if (queryArgs.length) {
-                const qs = new URLSearchParams(queryArgs).toString();
-                toolPath = `${fullPath}?${qs}`;
-                return await api(toolPath);
-              }
-              return await api(fullPath);
-            } else {
-              return await api(fullPath, {
-                method: agentTool.method,
-                body: JSON.stringify(args)
-              });
-            }
-          }
-          return { error: `Unknown tool: ${toolName}` };
-        }
+        return await api(fullPath);
+      } else {
+        return await api(fullPath, {
+          method: agentTool.method,
+          body: JSON.stringify(args)
+        });
       }
     } catch (e) {
       return { error: e.message };
@@ -456,107 +384,8 @@ export default class MimiAgent {
    * Tool definitions for Claude (matches MCPTools.mjs TOOLS)
    */
   getTools() {
-    const coreTools = [
-      {
-        name: 'wiki_read',
-        description: 'Read a wiki page by its document ID. Returns the page content in markdown.',
-        input_schema: {
-          type: 'object',
-          properties: { page: { type: 'string', description: 'Document ID - a WikiWord using only letters, numbers, and underscores (min 3 chars). Examples: "Home", "BedfordStreet", "FAQ_Page"' } },
-          required: ['page']
-        }
-      },
-      {
-        name: 'wiki_write',
-        description: 'Create or update a wiki page. The id is a WikiWord document identifier (letters, numbers, underscores only, min 3 chars). The title is a human-readable display name. Content should be markdown.',
-        input_schema: {
-          type: 'object',
-          properties: {
-            id: { type: 'string', description: 'Document ID - a WikiWord using only letters, numbers, and underscores (min 3 chars). Examples: "BedfordStreetHistory", "AboutUs", "FAQ_Page"' },
-            title: { type: 'string', description: 'Human-readable page title (e.g., "73 Bedford Street History")' },
-            content: { type: 'string', description: 'Page content (markdown)' },
-            visibility: { type: 'string', description: 'Optional visibility/ACL key for this page (e.g. "default", "michael-mandy"). Omit to keep current.' }
-          },
-          required: ['id', 'title', 'content']
-        }
-      },
-      {
-        name: 'wiki_list',
-        description: 'List all wiki pages. Returns titles and metadata.',
-        input_schema: { type: 'object', properties: {} }
-      },
-      {
-        name: 'archive_create',
-        description: 'Create an archive of content, code, notes, or any text.',
-        input_schema: {
-          type: 'object',
-          properties: {
-            title: { type: 'string', description: 'Archive title' },
-            content: { type: 'string', description: 'Content to archive' },
-            tags: { type: 'array', items: { type: 'string' }, description: 'Tags for organization' },
-            templateType: { type: 'string', description: 'Template type' }
-          },
-          required: ['title', 'content']
-        }
-      },
-      {
-        name: 'archive_list',
-        description: 'List archives with optional filtering.',
-        input_schema: {
-          type: 'object',
-          properties: {
-            limit: { type: 'number', description: 'Max results (default 20)' },
-            offset: { type: 'number', description: 'Pagination offset' },
-            tags: { type: 'string', description: 'Filter by tag (comma-separated)' },
-            template: { type: 'string', description: 'Filter by template type' }
-          }
-        }
-      },
-      {
-        name: 'archive_search',
-        description: 'Full-text search across all archives.',
-        input_schema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Search query' },
-            limit: { type: 'number', description: 'Max results (default 20)' }
-          },
-          required: ['query']
-        }
-      },
-      {
-        name: 'archive_read',
-        description: 'Read a specific archive by its ID.',
-        input_schema: {
-          type: 'object',
-          properties: { id: { type: 'string', description: 'Archive ID' } },
-          required: ['id']
-        }
-      },
-      {
-        name: 'archive_stats',
-        description: 'Get archive statistics: total count, tag breakdown, date range.',
-        input_schema: { type: 'object', properties: {} }
-      },
-      {
-        name: 'message_list',
-        description: 'List message board posts.',
-        input_schema: { type: 'object', properties: {} }
-      },
-      {
-        name: 'message_post',
-        description: 'Post a message to the message board.',
-        input_schema: {
-          type: 'object',
-          properties: { text: { type: 'string', description: 'Message content' } },
-          required: ['text']
-        }
-      },
-      {
-        name: 'secret_list',
-        description: 'List available secrets (metadata only).',
-        input_schema: { type: 'object', properties: {} }
-      },
+    // whoami is the only tool Mimi handles directly (not an agent)
+    const tools = [
       {
         name: 'whoami',
         description: 'Show your current wallet identity, auth method, and permissions.',
@@ -564,11 +393,11 @@ export default class MimiAgent {
       }
     ];
 
-    // Append dynamically registered agent tools
+    // All other tools come from the agent registry (declared in each agent's epistery.json)
     const getAgentTools = this.config.getAgentTools;
     if (typeof getAgentTools === 'function') {
       for (const tool of getAgentTools()) {
-        coreTools.push({
+        tools.push({
           name: tool.name,
           description: tool.description,
           input_schema: tool.inputSchema || { type: 'object', properties: {} }
@@ -576,7 +405,7 @@ export default class MimiAgent {
       }
     }
 
-    return coreTools;
+    return tools;
   }
 
   /**

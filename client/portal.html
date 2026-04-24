@@ -60,6 +60,7 @@
             line-height: 1.4;
             font-size: 15px;
             white-space: pre-wrap;
+            position: relative;
         }
         .msg.user {
             align-self: flex-end;
@@ -73,6 +74,76 @@
             color: var(--text-color);
             border-bottom-left-radius: 4px;
         }
+        .msg.assistant.rendered {
+            white-space: normal;
+        }
+        .msg.assistant.rendered p { margin: 0.4em 0; }
+        .msg.assistant.rendered p:first-child { margin-top: 0; }
+        .msg.assistant.rendered p:last-child { margin-bottom: 0; }
+        .msg.assistant.rendered ul,
+        .msg.assistant.rendered ol { margin: 0.4em 0; padding-left: 1.5em; }
+        .msg.assistant.rendered li { margin: 0.2em 0; }
+        .msg.assistant.rendered pre {
+            background: rgba(0,0,0,0.2);
+            padding: 8px 10px;
+            border-radius: 6px;
+            overflow-x: auto;
+            white-space: pre;
+        }
+        .msg.assistant.rendered code {
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+        .msg.assistant.rendered :not(pre) > code {
+            background: rgba(0,0,0,0.15);
+            padding: 1px 4px;
+            border-radius: 3px;
+        }
+        .msg.assistant.rendered blockquote {
+            border-left: 3px solid var(--primary);
+            margin: 0.4em 0;
+            padding: 2px 10px;
+            opacity: 0.85;
+        }
+        .msg.assistant.rendered table {
+            border-collapse: collapse;
+            margin: 0.4em 0;
+        }
+        .msg.assistant.rendered th,
+        .msg.assistant.rendered td {
+            border: 1px solid var(--page-border);
+            padding: 4px 8px;
+            text-align: left;
+        }
+        .msg.assistant.rendered h1,
+        .msg.assistant.rendered h2,
+        .msg.assistant.rendered h3 {
+            margin: 0.6em 0 0.3em;
+            border: none;
+        }
+        .msg.assistant.rendered h1 { font-size: 1.3em; }
+        .msg.assistant.rendered h2 { font-size: 1.15em; }
+        .msg.assistant.rendered h3 { font-size: 1.05em; }
+        .msg.assistant.rendered a {
+            color: var(--primary);
+            text-decoration: underline;
+        }
+        .msg-raw-toggle {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            background: none;
+            border: 1px solid var(--page-border);
+            border-radius: 4px;
+            color: var(--text-color-quiet);
+            font-size: 11px;
+            padding: 1px 6px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
+        .msg:hover .msg-raw-toggle { opacity: 1; }
+        .msg-raw-toggle:hover { color: var(--text-color); border-color: var(--text-color); }
         .msg.error {
             align-self: center;
             background: #fee;
@@ -387,8 +458,13 @@
         </div>
     </div>
 
-    <script>
-    (function() {
+    <script type="module">
+    import MarkUp from './client/MarkUp.mjs';
+
+    (async function() {
+        const markup = new MarkUp();
+        await markup.init();
+
         const transcript = document.getElementById('transcript');
         const textInput = document.getElementById('textInput');
         const sendBtn = document.getElementById('sendBtn');
@@ -567,7 +643,7 @@
                     },
                     text: (data) => {
                         fullText += data.text;
-                        msgDiv.textContent = fullText;
+                        renderMarkdown(msgDiv, fullText);
                         transcript.scrollTop = transcript.scrollHeight;
                         // Switch to streaming state on first text
                         if (state === 'thinking') setState('thinking', 'Responding...');
@@ -728,10 +804,48 @@
         function addMessage(role, text) {
             const div = document.createElement('div');
             div.className = 'msg ' + role;
-            div.textContent = text;
+            if (role === 'assistant' && text) {
+                renderMarkdown(div, text);
+            } else {
+                div.textContent = text;
+            }
             transcript.appendChild(div);
             transcript.scrollTop = transcript.scrollHeight;
             return div;
+        }
+
+        function renderMarkdown(div, raw) {
+            div._rawMarkdown = raw;
+            div.classList.add('rendered');
+            div.innerHTML = markup.render(raw);
+            addToggleBtn(div);
+        }
+
+        function addToggleBtn(div) {
+            if (div.querySelector('.msg-raw-toggle')) return;
+            const btn = document.createElement('button');
+            btn.className = 'msg-raw-toggle';
+            btn.textContent = 'md';
+            btn.title = 'Show raw markdown';
+            btn.addEventListener('click', () => {
+                const showing = div.classList.contains('rendered');
+                if (showing) {
+                    // switch to raw
+                    div.classList.remove('rendered');
+                    div.textContent = div._rawMarkdown;
+                    div.appendChild(btn);
+                    btn.textContent = 'html';
+                    btn.title = 'Show rendered';
+                } else {
+                    // switch to rendered
+                    div.classList.add('rendered');
+                    div.innerHTML = markup.render(div._rawMarkdown);
+                    div.appendChild(btn);
+                    btn.textContent = 'md';
+                    btn.title = 'Show raw markdown';
+                }
+            });
+            div.appendChild(btn);
         }
 
         // ---- Clear session ----
