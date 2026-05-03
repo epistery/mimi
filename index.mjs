@@ -27,7 +27,7 @@ const ACL_CACHE_TTL = 3 * 60 * 1000;  // 3 minutes
 
 /**
  * Extract agent name from route path.
- * /agent/rootz/simplifi-agent/accounts → @rootz/simplifi-agent
+ * /agent/rootz/simplifi-agent/accounts → rootz/simplifi-agent
  */
 function agentNameFromPath(path) {
   const m = path.match(/^\/agent\/([^/]+\/[^/]+)/);
@@ -240,6 +240,78 @@ export default class MimiAgent {
     return cleaned;
   }
 
+  /**
+   * Repair orphaned tool_use / tool_result pairs in history.
+   * Every assistant message containing tool_use blocks MUST be followed
+   * immediately by a user message whose tool_result IDs match.  If not,
+   * strip the unmatched tool_use blocks (or add synthetic tool_results).
+   */
+  _repairToolPairs(history) {
+    for (let i = 0; i < history.length; i++) {
+      const msg = history[i];
+      if (msg.role !== 'assistant' || typeof msg.content === 'string') continue;
+      if (!Array.isArray(msg.content)) continue;
+
+      const toolUseIds = msg.content
+        .filter(b => b.type === 'tool_use')
+        .map(b => b.id);
+      if (toolUseIds.length === 0) continue;
+
+      // Check the next message for matching tool_results
+      const next = history[i + 1];
+      const resultIds = new Set();
+      if (next && next.role === 'user' && Array.isArray(next.content)) {
+        for (const b of next.content) {
+          if (b.type === 'tool_result') resultIds.add(b.tool_use_id);
+        }
+      }
+
+      const orphanIds = toolUseIds.filter(id => !resultIds.has(id));
+      if (orphanIds.length === 0) continue;
+
+      // Strip orphaned tool_use blocks from the assistant message
+      const orphanSet = new Set(orphanIds);
+      const cleaned = msg.content.filter(b =>
+        b.type !== 'tool_use' || !orphanSet.has(b.id)
+      );
+      if (cleaned.length === 0) {
+        history[i] = { role: 'assistant', content: [{ type: 'text', text: '(tool results unavailable)' }] };
+      } else {
+        history[i] = { role: msg.role, content: cleaned };
+      }
+      console.log(`[mimi] Repaired ${orphanIds.length} orphaned tool_use block(s) at message ${i}`);
+    }
+
+    // Also strip orphaned tool_result messages (user message with tool_results
+    // whose preceding assistant message has no matching tool_use)
+    for (let i = 0; i < history.length; i++) {
+      const msg = history[i];
+      if (msg.role !== 'user' || typeof msg.content === 'string') continue;
+      if (!Array.isArray(msg.content)) continue;
+      if (!msg.content.some(b => b.type === 'tool_result')) continue;
+
+      const prev = history[i - 1];
+      const prevToolIds = new Set();
+      if (prev && prev.role === 'assistant' && Array.isArray(prev.content)) {
+        for (const b of prev.content) {
+          if (b.type === 'tool_use') prevToolIds.add(b.id);
+        }
+      }
+
+      // Keep only tool_results that match a preceding tool_use, plus any non-tool_result blocks
+      const cleaned = msg.content.filter(b =>
+        b.type !== 'tool_result' || prevToolIds.has(b.tool_use_id)
+      );
+      if (cleaned.length === 0) {
+        // Entire message was orphaned tool_results — remove it
+        history.splice(i, 1);
+        i--;
+      } else if (cleaned.length !== msg.content.length) {
+        history[i] = { role: msg.role, content: cleaned };
+      }
+    }
+  }
+
   trimHistory(convKey, history) {
     // Clean every message: strip citations, server_content, truncate large blocks
     for (let i = 0; i < history.length; i++) {
@@ -275,6 +347,9 @@ export default class MimiAgent {
       history.push(...trimmed);
       this.conversations.set(convKey, history);
     }
+
+    // Repair any broken tool_use / tool_result pairs (can happen after trimming)
+    this._repairToolPairs(history);
   }
 
   /**
