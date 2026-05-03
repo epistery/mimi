@@ -1163,7 +1163,7 @@ User wallet address: ${userAddress}`;
     }
 
     try {
-      const access = await req.domainAcl.checkAgentAccess('@epistery/mimi', req.episteryClient.address, req.hostname);
+      const access = await req.domainAcl.checkAgentAccess('epistery/mimi', req.episteryClient.address, req.hostname);
       result.admin = access.level >= 3;
       result.edit = access.level >= 2;
       result.read = access.level >= 1;

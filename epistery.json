@@ -1,5 +1,5 @@
 {
-  "name": "@epistery/mimi",
+  "name": "epistery/mimi",
   "version": "0.1.0",
   "description": "Voice portal - talk to your epistery host",
   "main": "index.mjs",
