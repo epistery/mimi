@@ -38,7 +38,7 @@ function agentNameFromPath(path) {
  * Check agent ACL for the authenticated client, with caching.
  */
 async function checkAgentAcl(reqCtx, agentName) {
-  const address = reqCtx.episteryClient?.address;
+  const address = reqCtx.me?.identityAddress;
   if (!reqCtx.domainAcl || !address) return { allowed: false, level: 0 };
 
   const cacheKey = `${address}:${agentName}`;
@@ -361,7 +361,7 @@ export default class MimiAgent {
       host: req.headers?.host || 'localhost',
       authorization: req.headers?.authorization || null,
       cookie: req.headers?.cookie || null,
-      episteryClient: req.episteryClient,
+      me: req.me,
       domainAcl: req.domainAcl,
       hostname: req.hostname,
       port: this.getInternalPort(req),
@@ -406,9 +406,9 @@ export default class MimiAgent {
       // whoami is handled directly — everything else routes through agent registry
       if (toolName === 'whoami') {
         return {
-          wallet: reqCtx.episteryClient?.address || null,
-          authMethod: reqCtx.episteryClient?.authType || 'none',
-          authenticated: !!reqCtx.episteryClient?.authenticated,
+          wallet: reqCtx.me?.identityAddress || null,
+          role: reqCtx.me?.role || null,
+          authenticated: !!reqCtx.me?.authenticated,
           domain: reqCtx.hostname
         };
       }
@@ -994,7 +994,7 @@ export default class MimiAgent {
         }
 
         // Get or initialize conversation
-        const convKey = sessionId || `mimi-${req.episteryClient?.address || 'anon'}-${Date.now()}`;
+        const convKey = sessionId || `mimi-${req.me?.identityAddress || 'anon'}-${Date.now()}`;
         if (!this.conversations.has(convKey)) {
           // Try to restore from UserVault so context survives agent switches
           let restored = [];
@@ -1003,7 +1003,7 @@ export default class MimiAgent {
               const vault = await req.userVault.get();
               if (vault.mimi?.history && Array.isArray(vault.mimi.history)) {
                 restored = vault.mimi.history;
-                console.log(`[mimi] Restored ${restored.length} messages from vault for ${req.episteryClient?.address}`);
+                console.log(`[mimi] Restored ${restored.length} messages from vault for ${req.me?.identityAddress}`);
               }
             } catch (err) {
               console.error('[mimi] Vault restore error:', err.message);
@@ -1118,7 +1118,7 @@ User wallet address: ${userAddress}`;
       const client = this.getAnthropicClient(reqCtx.hostname);
       const tools = await this.getToolsForDomain(reqCtx.hostname || 'localhost');
       const domain = reqCtx.hostname || 'localhost';
-      const userAddress = reqCtx.episteryClient?.address || 'unknown';
+      const userAddress = reqCtx.me?.identityAddress || 'unknown';
       const systemPrompt = this.buildSystemPrompt(domain, userAddress, isVoice);
 
       const allTools = [
@@ -1231,21 +1231,15 @@ User wallet address: ${userAddress}`;
    * Check permissions (same pattern as wiki)
    */
   async getPermissions(req) {
+    // Identity + ACL come from the host-owned req.me (human and MCP alike).
     const result = { admin: false, edit: false, read: false };
-
-    if (!req.episteryClient || !req.domainAcl) {
+    if (!req.me?.identityAddress || !req.domainAcl) {
       return result;
     }
-
-    try {
-      const access = await req.domainAcl.checkAgentAccess('epistery/mimi', req.episteryClient.address, req.hostname);
-      result.admin = access.level >= 3;
-      result.edit = access.level >= 2;
-      result.read = access.level >= 1;
-      return result;
-    } catch (error) {
-      console.error('[mimi] ACL check error:', error);
-    }
+    const access = await req.me.access('epistery/mimi');
+    result.admin = access.admin;
+    result.edit = access.edit;
+    result.read = access.read;
     return result;
   }
 
