@@ -25,6 +25,15 @@ const __dirname = path.dirname(__filename);
 const _aclCache = new Map();
 const ACL_CACHE_TTL = 3 * 60 * 1000;  // 3 minutes
 
+// Claude model the admin can select. All support tool use, web_search and streaming.
+const DEFAULT_MODEL = 'claude-sonnet-4-6';
+const AVAILABLE_MODELS = [
+  { id: 'claude-opus-4-8', label: 'Claude Opus 4.8 — most capable' },
+  { id: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
+  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 — balanced (default)' },
+  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 — fastest' }
+];
+
 /**
  * Extract agent name from route path.
  * /agent/rootz/simplifi-agent/accounts → rootz/simplifi-agent
@@ -83,6 +92,18 @@ export default class MimiAgent {
 
     this.anthropic = new Anthropic({ apiKey });
     return this.anthropic;
+  }
+
+  /**
+   * Resolve the configured Claude model for a domain.
+   * Read fresh each turn so an admin change takes effect without a restart.
+   * Falls back to DEFAULT_MODEL if unset or no longer offered.
+   */
+  getModel(domain) {
+    const cfg = new Config();
+    cfg.setPath(domain);
+    const model = cfg.data?.claude?.model;
+    return AVAILABLE_MODELS.some(m => m.id === model) ? model : DEFAULT_MODEL;
   }
 
   /**
@@ -662,6 +683,34 @@ export default class MimiAgent {
       res.json({ success: true });
     });
 
+    // Admin: get available models and the currently selected one
+    router.get('/admin/model', async (req, res) => {
+      const permissions = await this.getPermissions(req);
+      if (!permissions.admin) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      res.json({ models: AVAILABLE_MODELS, current: this.getModel(req.hostname || 'localhost') });
+    });
+
+    // Admin: set the Claude model
+    router.post('/admin/model', async (req, res) => {
+      const permissions = await this.getPermissions(req);
+      if (!permissions.admin) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      const { model } = req.body;
+      if (!AVAILABLE_MODELS.some(m => m.id === model)) {
+        return res.status(400).json({ error: 'Unknown model' });
+      }
+      const domain = req.hostname || 'localhost';
+      const cfg = new Config();
+      cfg.setPath(domain);
+      if (!cfg.data.claude) cfg.data.claude = {};
+      cfg.data.claude.model = model;
+      cfg.save();
+      res.json({ success: true, model });
+    });
+
     // Admin: whisper install status
     router.get('/admin/whisper', async (req, res) => {
       const permissions = await this.getPermissions(req);
@@ -1167,7 +1216,7 @@ User wallet address: ${userAddress}`;
 
       while (continueLoop) {
         const message = await streamWithRetry({
-          model: 'claude-sonnet-4-20250514',
+          model: this.getModel(domain),
           max_tokens: 4096,
           system: systemPrompt,
           tools: allTools,

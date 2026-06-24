@@ -125,6 +125,17 @@
       </div>
 
       <div class="console-panel">
+        <h2>Model</h2>
+        <div style="display:flex; gap:1em; align-items:center; margin-bottom:var(--spacer);">
+          <select id="model-select" style="flex:1; padding:0.5em; border:1px solid var(--page-border); border-radius:4px; font-size:0.875em;">
+            <option value="">Loading models...</option>
+          </select>
+          <button class="btn btn-primary" onclick="saveModel()">Save</button>
+        </div>
+        <div id="model-info" style="font-size:0.8em; color:var(--text-color-quiet);"></div>
+      </div>
+
+      <div class="console-panel">
         <h2>OpenAI API Key</h2>
         <div class="config-row">
           <label>API Key</label>
@@ -468,9 +479,60 @@
       }
     }
 
+    async function loadModel() {
+      try {
+        const res = await fetch(API_BASE + 'admin/model');
+        if (!res.ok) {
+          document.getElementById('model-info').textContent = 'Could not load models';
+          return;
+        }
+        const data = await res.json();
+        const select = document.getElementById('model-select');
+        select.innerHTML = '';
+        for (const m of data.models) {
+          const opt = document.createElement('option');
+          opt.value = m.id;
+          opt.textContent = m.label;
+          if (m.id === data.current) opt.selected = true;
+          select.appendChild(opt);
+        }
+        document.getElementById('model-info').textContent = `Current model: ${data.current}`;
+      } catch (err) {
+        console.error('[mimi-admin] Model load error:', err);
+        document.getElementById('model-info').textContent = 'Error loading models';
+      }
+    }
+
+    async function saveModel() {
+      const model = document.getElementById('model-select').value;
+      try {
+        const res = await fetch(API_BASE + 'admin/model', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        document.getElementById('model-info').textContent = `Current model: ${data.model}`;
+        const successEl = document.getElementById('success');
+        successEl.textContent = `Model set to: ${data.model}`;
+        successEl.style.display = 'block';
+        setTimeout(() => { successEl.style.display = 'none'; }, 3000);
+      } catch (err) {
+        const errorEl = document.getElementById('error');
+        errorEl.textContent = 'Failed to save model: ' + err.message;
+        errorEl.style.display = 'block';
+        setTimeout(() => { errorEl.style.display = 'none'; }, 5000);
+      }
+    }
+
     loadStatus();
     loadKeys();
     loadNotes();
+    loadModel();
     loadWhisperStatus();
     loadVoices();
   </script>
