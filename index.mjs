@@ -1101,6 +1101,28 @@ export default class MimiAgent {
         }
       }
     });
+
+    // Board-reply endpoint — message-board summons mimi to participate in a
+    // channel. Runs under the forwarded poster's session (their access/tools).
+    // Returns reply TEXT only; the board publishes it under the host identity.
+    router.post('/board-reply', async (req, res) => {
+      try {
+        const permissions = await this.getPermissions(req);
+        if (!permissions.read) {
+          return res.status(403).json({ error: 'Permission required' });
+        }
+        const { transcript, channel } = req.body || {};
+        if (!transcript || typeof transcript !== 'string') {
+          return res.status(400).json({ error: 'transcript is required' });
+        }
+        const reqCtx = this.captureRequestContext(req);
+        const reply = await this.processBoardReply(reqCtx, transcript, channel);
+        res.json({ reply: reply || '' });
+      } catch (error) {
+        console.error('[mimi] board-reply error:', error.message);
+        res.status(500).json({ error: error.message });
+      }
+    });
   }
 
   /**
@@ -1274,6 +1296,94 @@ User wallet address: ${userAddress}`;
       console.error('[mimi] Stream processing error:', error);
       send('error', { message: error.message });
     }
+  }
+
+  /**
+   * System prompt for participating in a message-board channel.
+   * Mimi is one voice in a shared, multi-party group chat.
+   */
+  buildBoardSystemPrompt(domain, channel) {
+    let aiNotes = '';
+    try {
+      const cfg = new Config();
+      cfg.setPath(domain);
+      aiNotes = cfg.data?.ai_notes || '';
+    } catch (e) { /* ignore */ }
+
+    let prompt = `You are Mimi, a member of the "${channel || 'general'}" channel on the message board at ${domain}.
+You were summoned because someone mentioned @mimi, or a conversation you are watching continued.
+This is a shared group chat — multiple people see each other's messages. Reply naturally as one
+participant, in context with the latest messages. Address people by name when it reads naturally.
+Be concise and genuinely useful. Use markdown when it helps clarity. If there is nothing useful to
+add, a short acknowledgement is fine. You have epistery tools (wiki, web search, etc.) — use them
+when they help your reply. Do NOT post to the board yourself; just produce the text of your reply.`;
+
+    if (aiNotes) {
+      prompt += `\n\nDomain notes from admin:\n${aiNotes}`;
+    }
+    return prompt;
+  }
+
+  /**
+   * Non-streaming variant of the Claude tool loop for board participation.
+   * Takes a formatted channel transcript and returns mimi's reply text.
+   * message_post is withheld so mimi cannot self-publish — the board owns
+   * authorship (under the host identity).
+   */
+  async processBoardReply(reqCtx, transcript, channel) {
+    const domain = reqCtx.hostname || 'localhost';
+    const client = this.getAnthropicClient(domain);
+    const allAgentTools = await this.getToolsForDomain(domain);
+    const tools = allAgentTools.filter(t => t.name !== 'message_post');
+    const allTools = [
+      { type: 'web_search_20250305', name: 'web_search', max_uses: 3 },
+      ...tools
+    ];
+    const systemPrompt = this.buildBoardSystemPrompt(domain, channel);
+
+    const messages = [{
+      role: 'user',
+      content: `Recent conversation in the "${channel || 'general'}" channel, oldest first:\n\n${transcript}\n\nWrite Mimi's next reply in context. Output ONLY the message text to post — no preamble, no surrounding quotes.`
+    }];
+
+    let finalText = '';
+    // Bound the tool loop so a misbehaving turn can't spin forever.
+    for (let i = 0; i < 8; i++) {
+      const message = await this.callClaudeWithRetry(client, {
+        model: this.getModel(domain),
+        max_tokens: 1024,
+        system: systemPrompt,
+        tools: allTools,
+        messages
+      });
+
+      if (message.stop_reason === 'tool_use') {
+        messages.push({ role: 'assistant', content: this._cleanContentBlocks(message.content) });
+        const regularTools = message.content.filter(b => b.type === 'tool_use' && b.name !== 'web_search');
+        if (regularTools.length === 0) {
+          // web_search-only turn (results already inline) — let it continue,
+          // but guard against a stall by collecting any text and stopping.
+          finalText = (message.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
+          if (finalText) break;
+          continue;
+        }
+        const toolResults = [];
+        for (const toolUse of regularTools) {
+          const result = await this.proxyToolCall(toolUse.name, toolUse.input, reqCtx);
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: toolUse.id,
+            content: JSON.stringify(result)
+          });
+        }
+        messages.push({ role: 'user', content: toolResults });
+        continue;
+      }
+
+      finalText = (message.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
+      break;
+    }
+    return finalText;
   }
 
   /**
