@@ -21,10 +21,6 @@ const __dirname = path.dirname(__filename);
  * response back.
  */
 
-// Agent ACL check cache: `${address}:${agentName}` → { result, ts }
-const _aclCache = new Map();
-const ACL_CACHE_TTL = 3 * 60 * 1000;  // 3 minutes
-
 // Claude model the admin can select. All support tool use, web_search and streaming.
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
 const AVAILABLE_MODELS = [
@@ -34,29 +30,57 @@ const AVAILABLE_MODELS = [
   { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 — fastest' }
 ];
 
+// Media types Claude can read natively as content blocks. A files_read result
+// for these comes back as base64; handed to Claude as a `document`/`image`
+// block it's read directly (PDF text + page images, image pixels) instead of
+// arriving as a useless wall of base64 inside a tool_result string.
+const DOC_MIME = new Set(['application/pdf']);
+const IMG_MIME = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+// PDF input caps at 32MB/100 pages on the API; files_read caps inline reads at
+// 25MB. Stay comfortably under and skip anything larger (Claude gets a note).
+const ATTACH_MAX_BYTES = 20 * 1024 * 1024;
+
 /**
- * Extract agent name from route path.
- * /agent/rootz/simplifi-agent/accounts → rootz/simplifi-agent
+ * If a tool returned inline base64 file content in a media type Claude reads
+ * natively (PDF, image), build the matching content block. Returns null
+ * otherwise (caller falls back to the JSON tool_result).
  */
-function agentNameFromPath(path) {
-  const m = path.match(/^\/agent\/([^/]+\/[^/]+)/);
-  return m ? `@${m[1]}` : null;
+function fileAttachmentBlock(result) {
+  if (!result || result.encoding !== 'base64' || typeof result.content !== 'string') return null;
+  if (typeof result.size === 'number' && result.size > ATTACH_MAX_BYTES) return null;
+  const mt = result.mimetype || 'application/octet-stream';
+  if (DOC_MIME.has(mt)) {
+    return { type: 'document', source: { type: 'base64', media_type: mt, data: result.content } };
+  }
+  if (IMG_MIME.has(mt)) {
+    return { type: 'image', source: { type: 'base64', media_type: mt, data: result.content } };
+  }
+  return null;
 }
 
 /**
- * Check agent ACL for the authenticated client, with caching.
+ * Turn a tool call's result into what we feed back to Claude. Normally a single
+ * tool_result carrying the JSON result. When the tool returned a PDF or image,
+ * the raw base64 is meaningless as text, so the tool_result is reduced to a
+ * compact reference (name/type/size) and the bytes ride along as a separate
+ * `attachment` content block the caller appends as a user turn.
  */
-async function checkAgentAcl(reqCtx, agentName) {
-  const address = reqCtx.me?.identityAddress;
-  if (!reqCtx.domainAcl || !address) return { allowed: false, level: 0 };
-
-  const cacheKey = `${address}:${agentName}`;
-  const cached = _aclCache.get(cacheKey);
-  if (cached && Date.now() - cached.ts < ACL_CACHE_TTL) return cached.result;
-
-  const result = await reqCtx.domainAcl.checkAgentAccess(agentName, address, reqCtx.hostname);
-  _aclCache.set(cacheKey, { result, ts: Date.now() });
-  return result;
+function packToolResult(toolUse, result) {
+  const attachment = fileAttachmentBlock(result);
+  if (!attachment) {
+    return {
+      toolResult: { type: 'tool_result', tool_use_id: toolUse.id, content: JSON.stringify(result) },
+      attachment: null
+    };
+  }
+  const ref = {
+    id: result.id, name: result.name, mimetype: result.mimetype, size: result.size,
+    note: 'Content attached as a document/image in the following message — read it directly.'
+  };
+  return {
+    toolResult: { type: 'tool_result', tool_use_id: toolUse.id, content: JSON.stringify(ref) },
+    attachment
+  };
 }
 
 export default class MimiAgent {
@@ -348,6 +372,24 @@ export default class MimiAgent {
       }
     }
 
+    // Drop bulky base64 attachments from all but the most recent message. Once
+    // Claude has read a PDF/image, keeping the raw bytes just bloats every
+    // future request (and the saved vault). The last message is spared so an
+    // in-flight retry (429/400) still has the attachment it was about to read.
+    for (let i = 0; i < history.length - 1; i++) {
+      const msg = history[i];
+      if (!Array.isArray(msg.content)) continue;
+      if (!msg.content.some(b => b.type === 'document' || b.type === 'image')) continue;
+      history[i] = {
+        role: msg.role,
+        content: msg.content.map(b =>
+          (b.type === 'document' || b.type === 'image')
+            ? { type: 'text', text: `[${b.type} attachment removed from history]` }
+            : b
+        )
+      };
+    }
+
     // Keep max 20 messages
     if (history.length > 20) {
       const trimmed = history.slice(-20);
@@ -404,15 +446,14 @@ export default class MimiAgent {
     const baseUrl = `http://127.0.0.1:${port}`;
 
     const api = async (urlPath, opts = {}) => {
-      // Enforce agent ACL using the already-authenticated clientAddress
-      const agentName = agentNameFromPath(urlPath);
-      if (agentName) {
-        const access = await checkAgentAcl(reqCtx, agentName);
-        if (!access.allowed) {
-          return { error: `Access denied: you do not have access to ${agentName}` };
-        }
-      }
-
+      // No ACL pre-check here. Each agent owns its own authorization and enforces
+      // it against the forwarded session (req.me reconstructed from the poster's
+      // cookie/bearer). Re-deriving it here is a shadow gate: it only sees coarse
+      // agent-level ACL under the global default stance, so it wrongly blocks
+      // grants the agent itself would honor — per-connector list membership,
+      // per-file ownership, an agent's own ACL stance. Forward the call and let
+      // the agent decide; whatever the poster could reach directly, mimi reaches
+      // on their behalf, and a denial comes back as the agent's own response.
       const url = `${baseUrl}${urlPath}`;
       try {
         const res = await fetch(url, { ...opts, headers: { ...headers, ...opts.headers } });
@@ -1148,7 +1189,9 @@ export default class MimiAgent {
       systemPrompt = `You are Mimi, a general-purpose voice assistant on the epistery host at ${domain}.
 You can answer any question — weather, trivia, math, advice, anything.
 Use web_search for current information like weather, news, sports, or prices.
-You also have epistery tools for wiki pages, archives, messages, and identity.
+You also have epistery tools for wiki pages, files, archives, messages, and identity.
+You can open files directly — PDFs and images come back as a readable attachment, so read them
+yourself rather than asking for their contents.
 Additional tools may be available from installed agents — use them when relevant.
 
 Your spoken replies are read aloud via TTS. Be conversational, like talking to a friend.
@@ -1163,7 +1206,9 @@ User wallet address: ${userAddress}`;
       systemPrompt = `You are Mimi, a helpful assistant on the epistery host at ${domain}.
 You can answer any question — weather, trivia, math, advice, anything.
 Use web_search for current information like weather, news, sports, or prices.
-You also have epistery tools for wiki pages, archives, messages, and identity.
+You also have epistery tools for wiki pages, files, archives, messages, and identity.
+You can open files directly — PDFs and images come back as a readable attachment, so read them
+yourself rather than asking for their contents.
 Additional tools may be available from installed agents — use them when relevant.
 
 Respond naturally. Use markdown formatting when it helps clarity.
@@ -1255,17 +1300,19 @@ User wallet address: ${userAddress}`;
 
           if (regularTools.length > 0) {
             const toolResults = [];
+            const attachments = [];
             for (const toolUse of regularTools) {
               toolCallCount++;
               send('tool', { name: toolUse.name, count: toolCallCount });
               const result = await this.proxyToolCall(toolUse.name, toolUse.input, reqCtx);
-              toolResults.push({
-                type: 'tool_result',
-                tool_use_id: toolUse.id,
-                content: JSON.stringify(result)
-              });
+              const packed = packToolResult(toolUse, result);
+              toolResults.push(packed.toolResult);
+              if (packed.attachment) attachments.push(packed.attachment);
             }
             history.push({ role: 'user', content: toolResults });
+            // Native PDFs/images ride in their own user turn after the
+            // tool_result turn so the tool-response message stays pure.
+            if (attachments.length) history.push({ role: 'user', content: attachments });
           }
           // For web_search-only turns, results are already in the assistant content
           if (regularTools.length === 0) {
@@ -1315,8 +1362,10 @@ You were summoned because someone mentioned @mimi, or a conversation you are wat
 This is a shared group chat — multiple people see each other's messages. Reply naturally as one
 participant, in context with the latest messages. Address people by name when it reads naturally.
 Be concise and genuinely useful. Use markdown when it helps clarity. If there is nothing useful to
-add, a short acknowledgement is fine. You have epistery tools (wiki, web search, etc.) — use them
-when they help your reply. Do NOT post to the board yourself; just produce the text of your reply.`;
+add, a short acknowledgement is fine. You have epistery tools (wiki, files, web search, etc.) — use
+them when they help your reply. You can open files with the files tools: PDFs and images come back
+as a readable attachment, so read them directly rather than asking for the text to be pasted.
+Do NOT post to the board yourself; just produce the text of your reply.`;
 
     if (aiNotes) {
       prompt += `\n\nDomain notes from admin:\n${aiNotes}`;
@@ -1368,15 +1417,16 @@ when they help your reply. Do NOT post to the board yourself; just produce the t
           continue;
         }
         const toolResults = [];
+        const attachments = [];
         for (const toolUse of regularTools) {
           const result = await this.proxyToolCall(toolUse.name, toolUse.input, reqCtx);
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: toolUse.id,
-            content: JSON.stringify(result)
-          });
+          const packed = packToolResult(toolUse, result);
+          toolResults.push(packed.toolResult);
+          if (packed.attachment) attachments.push(packed.attachment);
         }
         messages.push({ role: 'user', content: toolResults });
+        // PDFs/images get their own user turn so Claude reads them natively.
+        if (attachments.length) messages.push({ role: 'user', content: attachments });
         continue;
       }
 
