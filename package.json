@@ -1,6 +1,6 @@
 {
   "name": "@epistery/mimi",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Voice portal - talk to your epistery host",
   "type": "module",
   "main": "index.mjs",
