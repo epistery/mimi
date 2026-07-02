@@ -99,11 +99,11 @@ export default class MimiAgent {
    * Initialize Anthropic client from epistery Config
    * Looks for anthropic_api_key in the domain config
    */
-  getAnthropicClient(domain) {
+  async getAnthropicClient(domain) {
     if (this.anthropic) return this.anthropic;
 
     const cfg = new Config();
-    cfg.setPath(domain);
+    await cfg.setPath(domain);
 
     // Look for API key in domain config
     const apiKey = cfg.data?.anthropic_api_key
@@ -123,9 +123,9 @@ export default class MimiAgent {
    * Read fresh each turn so an admin change takes effect without a restart.
    * Falls back to DEFAULT_MODEL if unset or no longer offered.
    */
-  getModel(domain) {
+  async getModel(domain) {
     const cfg = new Config();
-    cfg.setPath(domain);
+    await cfg.setPath(domain);
     const model = cfg.data?.claude?.model;
     return AVAILABLE_MODELS.some(m => m.id === model) ? model : DEFAULT_MODEL;
   }
@@ -142,9 +142,9 @@ export default class MimiAgent {
   /**
    * Lazy-init STT provider from domain config
    */
-  getSTTProvider(domain) {
+  async getSTTProvider(domain) {
     if (this.sttProvider) return this.sttProvider;
-    this.sttProvider = createSTTProvider(domain);
+    this.sttProvider = await createSTTProvider(domain);
     return this.sttProvider;
   }
 
@@ -163,10 +163,10 @@ export default class MimiAgent {
   /**
    * Get configured TTS voice for a domain
    */
-  getTTSVoice(domain) {
+  async getTTSVoice(domain) {
     if (this._ttsVoice) return this._ttsVoice;
     const cfg = new Config();
-    cfg.setPath(domain);
+    await cfg.setPath(domain);
     this._ttsVoice = cfg.data?.tts?.voice || null;
     return this._ttsVoice;
   }
@@ -176,7 +176,7 @@ export default class MimiAgent {
    * Auto-cleanup after 5 minutes
    */
   generateTTS(text, domain) {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       const id = randomBytes(12).toString('hex');
       const dir = this.getAudioDir();
       const filePath = path.join(dir, `${id}.wav`);
@@ -188,7 +188,7 @@ export default class MimiAgent {
         .substring(0, 2000);
 
       const args = ['-w', filePath];
-      const voice = this.getTTSVoice(domain);
+      const voice = await this.getTTSVoice(domain);
       if (voice) args.push('-v', voice);
       args.push(clean);
 
@@ -659,7 +659,7 @@ export default class MimiAgent {
         return res.status(403).json({ error: 'Admin access required' });
       }
       const cfg = new Config();
-      cfg.setPath(req.hostname || 'localhost');
+      await cfg.setPath(req.hostname || 'localhost');
       const hasKey = !!(cfg.data?.anthropic_api_key || cfg.data?.claude?.anthropicKey);
       const hasOpenAIKey = !!(cfg.data?.openai?.apikey);
       res.json({ hasKey, hasOpenAIKey });
@@ -677,7 +677,7 @@ export default class MimiAgent {
       }
       const domain = req.hostname || 'localhost';
       const cfg = new Config();
-      cfg.setPath(domain);
+      await cfg.setPath(domain);
 
       if (provider === 'openai') {
         if (!cfg.data.openai) cfg.data.openai = {};
@@ -691,7 +691,7 @@ export default class MimiAgent {
         this.anthropic = null;
       }
 
-      cfg.save();
+      await cfg.save();
       res.json({ success: true });
     });
 
@@ -702,7 +702,7 @@ export default class MimiAgent {
         return res.status(403).json({ error: 'Admin access required' });
       }
       const cfg = new Config();
-      cfg.setPath(req.hostname || 'localhost');
+      await cfg.setPath(req.hostname || 'localhost');
       res.json({ notes: cfg.data?.ai_notes || '' });
     });
 
@@ -718,9 +718,9 @@ export default class MimiAgent {
       }
       const domain = req.hostname || 'localhost';
       const cfg = new Config();
-      cfg.setPath(domain);
+      await cfg.setPath(domain);
       cfg.data.ai_notes = notes;
-      cfg.save();
+      await cfg.save();
       res.json({ success: true });
     });
 
@@ -730,7 +730,7 @@ export default class MimiAgent {
       if (!permissions.admin) {
         return res.status(403).json({ error: 'Admin access required' });
       }
-      res.json({ models: AVAILABLE_MODELS, current: this.getModel(req.hostname || 'localhost') });
+      res.json({ models: AVAILABLE_MODELS, current: await this.getModel(req.hostname || 'localhost') });
     });
 
     // Admin: set the Claude model
@@ -745,10 +745,10 @@ export default class MimiAgent {
       }
       const domain = req.hostname || 'localhost';
       const cfg = new Config();
-      cfg.setPath(domain);
+      await cfg.setPath(domain);
       if (!cfg.data.claude) cfg.data.claude = {};
       cfg.data.claude.model = model;
-      cfg.save();
+      await cfg.save();
       res.json({ success: true, model });
     });
 
@@ -762,7 +762,7 @@ export default class MimiAgent {
       const status = checkWhisperInstall(whisperDir);
       // Check which STT mode is active
       const cfg = new Config();
-      cfg.setPath(req.hostname || 'localhost');
+      await cfg.setPath(req.hostname || 'localhost');
       const hasLocal = status.installed;
       const hasOpenAI = !!(cfg.data?.openai?.apikey || process.env.OPENAI_API_KEY);
       res.json({
@@ -791,15 +791,15 @@ export default class MimiAgent {
       installWhisper(whisperDir, (msg) => {
         this.whisperProgress.push(msg);
         console.log(`[mimi-whisper] ${msg}`);
-      }).then(({ binaryPath, modelPath }) => {
+      }).then(async ({ binaryPath, modelPath }) => {
         // Save to domain config
         const cfg = new Config();
-        cfg.setPath(domain);
+        await cfg.setPath(domain);
         if (!cfg.data.whisper) cfg.data.whisper = {};
         cfg.data.whisper.binary = binaryPath;
         cfg.data.whisper.model = modelPath;
         cfg.data.whisper.threads = '4';
-        cfg.save();
+        await cfg.save();
 
         // Reset STT provider so next request picks up local
         this.sttProvider = null;
@@ -843,9 +843,9 @@ export default class MimiAgent {
 
       // Clear config
       const cfg = new Config();
-      cfg.setPath(domain);
+      await cfg.setPath(domain);
       delete cfg.data.whisper;
-      cfg.save();
+      await cfg.save();
 
       // Reset STT provider to fall back to OpenAI
       this.sttProvider = null;
@@ -883,7 +883,7 @@ export default class MimiAgent {
           });
         });
         const cfg = new Config();
-        cfg.setPath(req.hostname || 'localhost');
+        await cfg.setPath(req.hostname || 'localhost');
         const current = cfg.data?.tts?.voice || null;
         res.json({ voices, current });
       } catch (err) {
@@ -901,14 +901,14 @@ export default class MimiAgent {
       const { voice } = req.body;
       const domain = req.hostname || 'localhost';
       const cfg = new Config();
-      cfg.setPath(domain);
+      await cfg.setPath(domain);
       if (voice) {
         if (!cfg.data.tts) cfg.data.tts = {};
         cfg.data.tts.voice = voice;
       } else {
         delete cfg.data.tts?.voice;
       }
-      cfg.save();
+      await cfg.save();
       this._ttsVoice = null; // reset cache
       res.json({ success: true, voice: voice || 'default' });
     });
@@ -1036,7 +1036,7 @@ export default class MimiAgent {
         // Transcribe via STT provider
         let text;
         try {
-          const stt = this.getSTTProvider(req.domain);
+          const stt = await this.getSTTProvider(req.domain);
           text = await stt.transcribe(audioBuffer);
         } catch (err) {
           console.error('[mimi] STT error:', err.message);
@@ -1176,11 +1176,11 @@ export default class MimiAgent {
   /**
    * Build the system prompt for Claude
    */
-  buildSystemPrompt(domain, userAddress, isVoice) {
+  async buildSystemPrompt(domain, userAddress, isVoice) {
     let aiNotes = '';
     try {
       const cfg = new Config();
-      cfg.setPath(domain);
+      await cfg.setPath(domain);
       aiNotes = cfg.data?.ai_notes || '';
     } catch (e) { /* ignore */ }
 
@@ -1231,11 +1231,11 @@ User wallet address: ${userAddress}`;
     const send = (event, data) => this.sendSSE(res, event, data);
 
     try {
-      const client = this.getAnthropicClient(reqCtx.hostname);
+      const client = await this.getAnthropicClient(reqCtx.hostname);
       const tools = await this.getToolsForDomain(reqCtx.hostname || 'localhost');
       const domain = reqCtx.hostname || 'localhost';
       const userAddress = reqCtx.me?.identityAddress || 'unknown';
-      const systemPrompt = this.buildSystemPrompt(domain, userAddress, isVoice);
+      const systemPrompt = await this.buildSystemPrompt(domain, userAddress, isVoice);
 
       const allTools = [
         { type: 'web_search_20250305', name: 'web_search', max_uses: 3 },
@@ -1283,7 +1283,7 @@ User wallet address: ${userAddress}`;
 
       while (continueLoop) {
         const message = await streamWithRetry({
-          model: this.getModel(domain),
+          model: await this.getModel(domain),
           max_tokens: 4096,
           system: systemPrompt,
           tools: allTools,
@@ -1349,11 +1349,11 @@ User wallet address: ${userAddress}`;
    * System prompt for participating in a message-board channel.
    * Mimi is one voice in a shared, multi-party group chat.
    */
-  buildBoardSystemPrompt(domain, channel) {
+  async buildBoardSystemPrompt(domain, channel) {
     let aiNotes = '';
     try {
       const cfg = new Config();
-      cfg.setPath(domain);
+      await cfg.setPath(domain);
       aiNotes = cfg.data?.ai_notes || '';
     } catch (e) { /* ignore */ }
 
@@ -1381,14 +1381,14 @@ Do NOT post to the board yourself; just produce the text of your reply.`;
    */
   async processBoardReply(reqCtx, transcript, channel) {
     const domain = reqCtx.hostname || 'localhost';
-    const client = this.getAnthropicClient(domain);
+    const client = await this.getAnthropicClient(domain);
     const allAgentTools = await this.getToolsForDomain(domain);
     const tools = allAgentTools.filter(t => t.name !== 'message_post');
     const allTools = [
       { type: 'web_search_20250305', name: 'web_search', max_uses: 3 },
       ...tools
     ];
-    const systemPrompt = this.buildBoardSystemPrompt(domain, channel);
+    const systemPrompt = await this.buildBoardSystemPrompt(domain, channel);
 
     const messages = [{
       role: 'user',
@@ -1399,7 +1399,7 @@ Do NOT post to the board yourself; just produce the text of your reply.`;
     // Bound the tool loop so a misbehaving turn can't spin forever.
     for (let i = 0; i < 8; i++) {
       const message = await this.callClaudeWithRetry(client, {
-        model: this.getModel(domain),
+        model: await this.getModel(domain),
         max_tokens: 1024,
         system: systemPrompt,
         tools: allTools,
