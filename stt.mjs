@@ -94,9 +94,9 @@ class LocalWhisperProvider {
  * Config ini sections: [whisper] binary=... model=... threads=4
  *                      [openai] apikey=sk-...
  */
-export function createSTTProvider(domain) {
+export async function createSTTProvider(domain) {
   const cfg = new Config();
-  cfg.setPath(domain);
+  await cfg.setPath(domain);
 
   // Prefer local whisper if configured and files exist
   const binaryPath = cfg.data?.whisper?.binary;
