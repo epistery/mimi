@@ -421,7 +421,13 @@ export default class MimiAgent {
    */
   captureRequestContext(req) {
     return {
-      host: req.headers?.host || 'localhost',
+      // Resolved public domain, NOT the raw Host header. On an internal summon
+      // (message-board → mimi) undici strips the caller's Host header, so the
+      // raw header is "127.0.0.1:PORT"; only X-Forwarded-Host carries the real
+      // domain, and req.hostname is where trust proxy='loopback' surfaces it.
+      // Forwarding the raw header made every proxied agent (connector, files)
+      // resolve to the empty 127.0.0.1 domain store.
+      host: req.hostname || req.headers?.host || 'localhost',
       authorization: req.headers?.authorization || null,
       cookie: req.headers?.cookie || null,
       me: req.me,
